@@ -1,0 +1,45 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Rules for this project
+
+- Keep every existing comment and code explanation. Do not strip comments, and do not run a minifier that drops them. When code changes, update the comment next to it instead of deleting it.
+- When a block of upstream code is disabled, keep the original lines commented out with a note saying why. See the "MV3 fork" comment in `userscript.user.js`, next to `extension_error_handler();`.
+- `userscript.user.js` is a vendored build of upstream maxurl. Keep edits to it minimal and say so in a comment.
+
+## What this is
+
+A Chrome Manifest V3 port of "Larger image finder" 0.8.0, which was MV2 and is no longer maintained. The original lives in the sibling folder `Larger_image_finder/` and is not modified here.
+
+## Commands
+
+- Run the end-to-end checks: `node tests/run-tests.mjs`. It starts a headless Chrome with a temporary profile and download folder, loads this folder through the DevTools `Extensions.loadUnpacked` command, and removes the temporary folders afterwards. Set `CHROME_PATH` if Chrome is not under Program Files, and `CDP_PORT` if port 9333 is busy.
+- Load it by hand: `chrome://extensions`, enable Developer mode, "Load unpacked", and select this folder.
+
+## Architecture
+
+- `manifest.json`: MV3. Background is the `background.js` service worker. Content script is `userscript.user.js` on `<all_urls>` in all frames. Toolbar popup is `html/popup.html`. Options page is `html/options.html`.
+- `userscript.user.js`: upstream maxurl, about 5 MB, mostly site rules. It runs as the content script and talks to the worker with `chrome.runtime.sendMessage`. It also renders the options UI into `#options`.
+- `background.js`: one dispatch table (`handlers`) for every message type the userscript sends.
+  - `request` / `abort_request`: cross-origin fetch proxy. Headers go through temporary `declarativeNetRequest` session rules, and results are pushed back to the requesting frame.
+  - `download`, `newtab`: images that need headers are handed to the viewer page. Others use `chrome.downloads` or `chrome.tabs` directly.
+  - `getcookies`, `getvalue`, `setvalue`, `get_lib`, `add_to_history`, `override_next_headers`.
+  - Context menu "Try to find larger image", which sends `{type: "context_imu"}` to the tab.
+- `html/viewer.html` + `js/viewer.js`: opened for images that need headers. It fetches them through the proxy and either shows the image or saves it from a blob URL (download mode), then closes itself.
+- `html/popup.html` + `js/popup.js`: Global Enable/Disable toggle, stored as `imu_enabled` in `chrome.storage.sync`.
+
+## Verified in Chrome 155
+
+- DNR header rules apply to fetch and XHR subresource requests. `Referer` is set correctly.
+- DNR header rules did not apply to top-level tab navigations in this build, including with `tabIds` and an explicit `main_frame` type. That is why headers-protected images open through the viewer page.
+- An idle service worker is not kept alive by an open `runtime.connect` port. The userscript's port was therefore removed. See the "MV3 fork" comment.
+- Headless Chrome 155 ignores `--load-extension`. Use the DevTools `Extensions.loadUnpacked` command with `--enable-unsafe-extension-debugging`, as `tests/run-tests.mjs` does.
+
+## Known gaps and dead code
+
+- The `bg_redirect` branch in `userscript.user.js` calls `chrome.tabs.update` from the content script, which Chrome does not allow. The worker never sends `bg_redirect`, and `redirect` is a no-op, so the branch is unreachable.
+- `notification` returns `null`. `permission` and `remote` / `remote_reply` (opt-in via `allow_remote`) are not handled and reply with "not ported to MV3 yet".
+- There is no `lib/` folder, the same as in the original build. `get_lib` returns `null`.
+- The context menu and its `setvalue` toggle are not covered by `tests/run-tests.mjs`.
+- The content script is still about 5 MB. Making it smaller without removing comments needs a different approach, such as loading site rules per domain.

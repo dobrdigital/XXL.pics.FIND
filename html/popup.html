@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Larger image finder</title>
+  <style>
+    :root { color-scheme: light dark; --accent: #0a6cff; }
+    body { margin: 0; width: 220px; padding: 12px; font: 13px/1.4 system-ui, sans-serif; }
+    h1 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; }
+    h1 img { width: 24px; height: 24px; }
+    .toggle { display: flex; border: 1px solid var(--accent); border-radius: 6px; overflow: hidden; }
+    .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .toggle label { flex: 1; padding: 6px 0; text-align: center; color: var(--accent); cursor: pointer; }
+    .toggle input:checked + label { background: var(--accent); color: #fff; }
+    .toggle input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <h1><img src="../icons/icon-48.png" alt="">Larger image finder</h1>
+  <div class="toggle" role="radiogroup" aria-label="Global enable/disable">
+    <input type="radio" name="global-status" id="global-enable" checked>
+    <label for="global-enable">Global Enable</label>
+    <input type="radio" name="global-status" id="global-disable">
+    <label for="global-disable">Global Disable</label>
+  </div>
+  <script src="../js/popup.js"></script>
+</body>
+</html>
