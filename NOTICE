@@ -1,0 +1,17 @@
+XXL.pics.FIND
+Copyright (c) DEV + DESIGN = REAILISM
+
+This product includes software developed by others:
+
+  Image Max URL (maxurl) by qsniyg
+  https://github.com/qsniyg/maxurl
+  Licensed under the Apache License, Version 2.0.
+  Vendored as userscript.user.js, with one documented change (the "MV3 fork"
+  comment next to extension_error_handler()). The site rules in that file are
+  the work of its authors and contributors.
+
+  Larger image finder 0.8.0 (the Manifest V2 extension this build is based on).
+  Its popup, options page and message protocol were used as the starting point.
+
+The Apache License, Version 2.0 is available at
+https://www.apache.org/licenses/LICENSE-2.0

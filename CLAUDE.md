@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Rules for this project
 
 - Keep every existing comment and code explanation. Do not strip comments, and do not run a minifier that drops them. When code changes, update the comment next to it instead of deleting it.
+- Copyright line for the new work: "DEV + DESIGN = REAILISM" (manifest `author`, popup and gallery footers, `NOTICE`). Keep the upstream attribution in `NOTICE`: `userscript.user.js` is Apache-2.0 code by qsniyg.
 - When a block of upstream code is disabled, keep the original lines commented out with a note saying why. See the "MV3 fork" comment in `userscript.user.js`, next to `extension_error_handler();`.
 - `userscript.user.js` is a vendored build of upstream maxurl. Keep edits to it minimal and say so in a comment.
 
