@@ -133,7 +133,11 @@ var $$IMU_EXPORT$$;
 
 		try {
 			var extension_manifest = chrome.runtime.getManifest();
-			is_extension = extension_manifest.name === "Larger image finder";
+			// MV3 fork: the extension was renamed to "XXL.pics.FIND", so the name check had to
+			// accept it. Without this the script ran as a plain userscript: no extension
+			// messages, so the right-click action and the request proxy did nothing.
+			// Original line: is_extension = extension_manifest.name === "Larger image finder";
+			is_extension = extension_manifest.name === "XXL.pics.FIND" || extension_manifest.name === "Larger image finder";
 
 			if (!is_extension)
 				return;

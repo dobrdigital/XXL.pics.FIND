@@ -167,6 +167,22 @@ function startSite() {
 <video id="clip" src="/clip.mp4" width="300" height="200" muted style="display:block;margin:20px"></video>
 <p id="away" style="margin:20px">text</p>`);
     }
+    // The userscript's generic MediaWiki rule turns /thumb/a/ab/NAME/300px-NAME into the
+    // original /a/ab/NAME, on any host. This pair lets the tests run the right-click
+    // action end to end: the page shows the 300 px thumbnail, the larger file is 1200 px.
+    if (pathname.startsWith("/thumb/a/ab/pic.png/")) {
+      res.writeHead(200, { "content-type": "image/png" });
+      return res.end(makePng(300, 200));
+    }
+    if (pathname === "/a/ab/pic.png") {
+      res.writeHead(200, { "content-type": "image/png" });
+      return res.end(makePng(1200, 800));
+    }
+    if (pathname === "/ctx-page") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><title>ctx</title><body style="margin:0">
+<img id="pic" src="/thumb/a/ab/pic.png/300px-pic.png" width="300" height="200" style="display:block;margin:40px">`);
+    }
     // Not decodable on purpose: the tests only need the request and its headers.
     if (pathname === "/clip.mp4") {
       res.writeHead(200, { "content-type": "video/mp4", "content-length": "2000" });
@@ -631,6 +647,30 @@ async function main() {
     check("the popup switch turns the hover button off", offButton === null, String(offButton));
     hoverPage.cdp.close();
     await closeTarget(hoverPage.target.id);
+
+    // ---- right-click "Try to find larger image" ------------------------------
+
+    // The extension name is checked by the userscript to decide if it runs as an extension
+    // (renaming it once broke this action), so this test runs the whole path: the mouse
+    // is over a thumbnail, the worker sends context_imu, and a popup with the larger
+    // image must appear.
+    const ctxPage = await openTarget(`${base}/ctx-page`);
+    await sleep(3500);
+    const ctxTab = await popup.cdp.eval(`new Promise((r) => chrome.tabs.query({ url: ${JSON.stringify(base + "/ctx-page")} }, (tabs) => r(tabs.length ? tabs[0].id : -1)))`);
+    const ctxPoint = await ctxPage.cdp.eval(`(() => { const r = document.getElementById("pic").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    for (let i = 0; i < 3; i++) {
+      await ctxPage.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: ctxPoint.x + i, y: ctxPoint.y });
+      await sleep(200);
+    }
+    await popup.cdp.eval(`chrome.tabs.sendMessage(${ctxTab}, { type: "context_imu" }).catch(() => {}), true`);
+    let popupWidth = 0;
+    for (let i = 0; i < 60 && !popupWidth; i++) {
+      await sleep(200);
+      popupWidth = await ctxPage.cdp.eval(`(() => { const big = [...document.images].find((i) => i.id !== "pic" && i.naturalWidth === 1200); return big ? big.naturalWidth : 0; })()`);
+    }
+    check("right-click \"Try to find larger image\" opens a popup with the larger file", popupWidth === 1200, "popup image width " + popupWidth);
+    ctxPage.cdp.close();
+    await closeTarget(ctxPage.target.id);
 
     browser.close();
   } finally {

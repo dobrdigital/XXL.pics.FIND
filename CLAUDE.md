@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Keep every existing comment and code explanation. Do not strip comments, and do not run a minifier that drops them. When code changes, update the comment next to it instead of deleting it.
 - Copyright line for the new work: "DEV + DESIGN = REAILISM" (manifest `author`, popup and gallery footers, `NOTICE`). Keep the upstream attribution in `NOTICE`: `userscript.user.js` is Apache-2.0 code by qsniyg.
 - When a block of upstream code is disabled, keep the original lines commented out with a note saying why. See the "MV3 fork" comment in `userscript.user.js`, next to `extension_error_handler();`.
+- The userscript decides whether it runs as an extension by comparing `chrome.runtime.getManifest().name` with a fixed string (see the "MV3 fork" comment near `check_if_extension`). If the extension is renamed again, update that string too, or the right-click action and the request proxy silently stop working. `tests/run-tests.mjs` has an end-to-end right-click test that catches this.
 - `userscript.user.js` is a vendored build of upstream maxurl. Keep edits to it minimal and say so in a comment.
 
 ## What this is
