@@ -1,5 +1,5 @@
 {
-  "name": "larger-image-finder-mv3",
+  "name": "xxl-pics-find",
   "private": true,
   "description": "Development tooling only. The extension itself has no dependencies and no build step.",
   "type": "module",
