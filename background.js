@@ -18,6 +18,9 @@
 // Custom request headers (Referer, Origin, ...) cannot be set on fetch() from an
 // extension, so they go through temporary declarativeNetRequest session rules.
 
+// Reads image sizes from file headers (probeImageSize); shared with the gallery page.
+importScripts("js/imagesize.js");
+
 const MENU_ID = "imu-find-larger";
 const SCAN_MENU_ID = "imu-scan-page";
 const SCAN_PREFIX = "scan:";
@@ -486,6 +489,46 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove([NET_PREFIX + tabId, MEDIA_PREFIX + tabId]).catch(() => {});
 });
 
+// ---- hover download button: the best source file for one picture or video -----
+
+// url -> Promise of its size. A page's images are probed once per worker run.
+const probeCache = new Map();
+function probeCached(url) {
+  if (probeCache.size > 500) probeCache.clear();
+  if (!probeCache.has(url)) probeCache.set(url, probeImageSize(url));
+  return probeCache.get(url);
+}
+
+// Of the candidate URLs for one image (srcset entries, lazy-load attributes, a link
+// to the original), returns the one with the most pixels, or null if none can be read.
+async function bestSource(urls) {
+  const list = [...new Set(urls)].filter((url) => /^https?:/i.test(url)).slice(0, 12);
+  const probed = await Promise.all(list.map(async (url) => ({ url, size: await probeCached(url) })));
+  let best = null;
+  for (const { url, size } of probed) {
+    if (!size) continue;
+    const area = size.width * size.height;
+    if (!best || area > best.area || (area === best.area && size.bytes > best.bytes)) {
+      best = { url, width: size.width, height: size.height, bytes: size.bytes, area };
+    }
+  }
+  return best && { url: best.url, width: best.width, height: best.height, bytes: best.bytes };
+}
+
+// The best downloadable video this tab has loaded: from the network capture and from a
+// site's own API (X). Streams are skipped, because they cannot be saved as one file.
+async function bestVideo(tabId) {
+  const stored = await chrome.storage.session.get([NET_PREFIX + tabId, MEDIA_PREFIX + tabId]);
+  const captured = /** @type {{ url: string, kind?: string, width?: number, height?: number, bitrate?: number, bytes?: number }[]} */ (
+    Object.values(stored).flat()
+  );
+  const videos = captured.filter((item) => item && item.kind === "video");
+  videos.sort((a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0)
+    || (b.bitrate || 0) - (a.bitrate || 0) || (b.bytes || 0) - (a.bytes || 0));
+  const best = videos[0];
+  return best ? { url: best.url, width: best.width || 0, height: best.height || 0, bytes: best.bytes || 0 } : null;
+}
+
 // ---- cookies, storage, libraries, history ----------------------------------
 
 async function cookieHeader(url) {
@@ -564,6 +607,16 @@ const handlers = {
       await rememberMedia(MEDIA_PREFIX, sender.tab.id, items);
     }
     return { type: "media_found" };
+  },
+
+  // From js/hover-button.js. The result decides whether the button is shown at all.
+  async best_source(message) {
+    const urls = message.data && Array.isArray(message.data.urls) ? message.data.urls.filter((url) => typeof url === "string") : [];
+    return { type: "best_source", data: await bestSource(urls) };
+  },
+
+  async best_video(message, sender) {
+    return { type: "best_video", data: sender.tab ? await bestVideo(sender.tab.id) : null };
   },
 
   // Sent by the toolbar popup. Without a tabId the active tab of the current window is used.

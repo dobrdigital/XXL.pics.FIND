@@ -155,7 +155,7 @@ function makeCard(item) {
   dim.className = "dim";
   dim.textContent = item.width && item.height ? item.width + " × " + item.height : "size unknown";
   const extra = [];
-  if (item.bytes) extra.push((item.bytes / 1048576).toFixed(1) + " MB");
+  if (item.bytes) extra.push(item.bytes < 1048576 ? Math.round(item.bytes / 1024) + " KB" : (item.bytes / 1048576).toFixed(1) + " MB");
   if (item.bitrate) extra.push(Math.round(item.bitrate / 1000) + " kbps");
   const meta = document.createElement("span");
   meta.className = "meta";

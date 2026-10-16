@@ -90,10 +90,13 @@ async function probeImageSize(url, timeoutMs = 6000) {
     const size = imageSizeFromBytes(head);
     if (!size || !size.width || !size.height) return null;
     const range = (response.headers.get("content-range") || "").match(/\/(\d+)$/);
+    // A 206 answer carries only the part asked for, so its content-length is the size of
+    // the probe, not of the file. Without a content-range the file size is unknown (0).
+    const partial = response.status === 206;
     return {
       width: size.width,
       height: size.height,
-      bytes: range ? Number(range[1]) : Number(response.headers.get("content-length")) || 0,
+      bytes: range ? Number(range[1]) : partial ? 0 : Number(response.headers.get("content-length")) || 0,
       type: response.headers.get("content-type") || "",
     };
   } catch (error) {

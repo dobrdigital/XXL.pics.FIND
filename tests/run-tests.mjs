@@ -159,6 +159,14 @@ function startSite() {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(`<!doctype html><title>many</title>${imgs}`);
     }
+    // A picture that has a larger file in its srcset, and a video, for the hover button.
+    if (pathname === "/hover-page") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><title>hover</title><body style="margin:0">
+<img id="pic" src="/png?w=300&h=200" srcset="/png?w=300&h=200 300w, /png?w=900&h=600 900w" sizes="300px" width="300" height="200" style="display:block;margin:20px">
+<video id="clip" src="/clip.mp4" width="300" height="200" muted style="display:block;margin:20px"></video>
+<p id="away" style="margin:20px">text</p>`);
+    }
     // Not decodable on purpose: the tests only need the request and its headers.
     if (pathname === "/clip.mp4") {
       res.writeHead(200, { "content-type": "video/mp4", "content-length": "2000" });
@@ -567,6 +575,62 @@ async function main() {
     check("SHOW NEXT adds the remaining images and then disappears", moreLabel === "SHOW NEXT 5" && allCards === 14 && moreHiddenAtEnd, `${moreLabel}, ${allCards} cards`);
     manyPage.cdp.close();
     await closeTarget(manyPage.target.id);
+
+    // ---- hover download button ----------------------------------------------
+
+    const bestSource = await send({ type: "best_source", data: { urls: [`${base}/png?w=100&h=66`, `${base}/png?w=900&h=600`, `${base}/png?w=300&h=200`, `chrome-extension://${extId}/manifest.json`] } });
+    check("best_source returns the candidate with the most pixels", bestSource.data?.width === 900 && bestSource.data.height === 600 && bestSource.data.url.endsWith("w=900&h=600"), JSON.stringify(bestSource.data));
+
+    const hoverPage = await openTarget(`${base}/hover-page`);
+    await sleep(1500);
+    const centre = (id) => hoverPage.cdp.eval(`(() => { const r = document.getElementById("${id}").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    const buttonText = () => hoverPage.cdp.eval(`(() => { for (const d of document.querySelectorAll("div")) { if (d.shadowRoot) { const b = d.shadowRoot.querySelector("button"); if (b && !b.hidden) return b.textContent; } } return null; })()`);
+    const moveTo = async (x, y) => {
+      for (let i = 0; i < 2; i++) {
+        await hoverPage.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + i, y });
+        await sleep(150);
+      }
+    };
+    // Moves the mouse over an element and waits for the button to show.
+    async function hoverOver(id, wait = 6000) {
+      const point = await centre(id);
+      await moveTo(point.x, point.y);
+      for (let i = 0; i < wait / 150; i++) {
+        const text = await buttonText();
+        if (text) return text;
+        await sleep(150);
+      }
+      return null;
+    }
+    const awayPoint = await centre("away");
+
+    const imageButton = await hoverOver("pic");
+    check("hovering a picture shows a button with the size of its largest file", /900.600/.test(imageButton || ""), imageButton || "no button");
+
+    await hoverPage.cdp.eval(`(() => { for (const d of document.querySelectorAll("div")) { if (d.shadowRoot) { const b = d.shadowRoot.querySelector("button"); if (b && !b.hidden) b.click(); } } return true; })()`);
+    let downloaded = null;
+    for (let i = 0; i < 40 && !downloaded; i++) {
+      await sleep(150);
+      downloaded = await popup.cdp.eval(`new Promise((r) => chrome.downloads.search({ orderBy: ["-startTime"], limit: 3 }, (d) => r(d.map((x) => x.url).find((u) => u.includes("w=900&h=600")) || null)))`);
+    }
+    check("clicking the button downloads the largest file", Boolean(downloaded), downloaded || "no download");
+
+    await moveTo(awayPoint.x, awayPoint.y);
+    await sleep(400);
+    check("the button disappears when the mouse leaves", (await buttonText()) === null);
+
+    const videoButton = await hoverOver("clip");
+    check("hovering a video shows a VIDEO download button", /VIDEO/.test(videoButton || ""), videoButton || "no button");
+
+    // The popup switch turns the button off everywhere.
+    await moveTo(awayPoint.x, awayPoint.y);
+    await popup.cdp.eval(`new Promise((r) => chrome.storage.sync.set({ xxl_hover_button: "false" }, r))`);
+    await sleep(500);
+    const offButton = await hoverOver("pic", 2000);
+    await popup.cdp.eval(`new Promise((r) => chrome.storage.sync.set({ xxl_hover_button: "true" }, r))`);
+    check("the popup switch turns the hover button off", offButton === null, String(offButton));
+    hoverPage.cdp.close();
+    await closeTarget(hoverPage.target.id);
 
     browser.close();
   } finally {

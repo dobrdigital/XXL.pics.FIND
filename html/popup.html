@@ -18,6 +18,7 @@
             background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
     #scan:disabled { opacity: .6; cursor: default; }
     #scan-status { margin: 6px 0 0; min-height: 1.4em; color: GrayText; font-size: 12px; }
+    .option { display: flex; align-items: center; gap: 6px; margin-top: 10px; cursor: pointer; }
     footer { margin-top: 8px; color: GrayText; font-size: 11px; text-align: center; }
   </style>
 </head>
@@ -29,6 +30,7 @@
     <input type="radio" name="global-status" id="global-disable">
     <label for="global-disable">Global Disable</label>
   </div>
+  <label class="option"><input type="checkbox" id="hover-button" checked> Download button on hover</label>
   <button id="scan" type="button">Find largest images on this page</button>
   <p id="scan-status" role="status"></p>
   <footer>&copy; DEV + DESIGN = REAILISM</footer>
