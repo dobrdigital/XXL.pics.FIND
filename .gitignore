@@ -1,1 +1,10 @@
 node_modules/
+
+# OS and editor files
+Thumbs.db
+.DS_Store
+*.log
+
+# Packed builds
+*.zip
+*.crx
