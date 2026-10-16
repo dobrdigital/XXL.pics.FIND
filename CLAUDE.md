@@ -16,6 +16,7 @@ The extension's display name is "XXL.pics.FIND" (set in `_locales/*/messages.jso
 
 - Run the end-to-end checks: `node tests/run-tests.mjs`. It starts a headless Chrome with a temporary profile and download folder, loads this folder through the DevTools `Extensions.loadUnpacked` command, and removes the temporary folders afterwards. Set `CHROME_PATH` if Chrome is not under Program Files, and `CDP_PORT` if port 9333 is busy.
 - Type-check the worker, popup, viewer and tests: `npm install` once, then `npm run typecheck` (`tsc` with `checkJs` and `@types/chrome`, see `jsconfig.json`). `userscript.user.js` is excluded. The packages are development tools only. The extension has no dependencies and no build step.
+- Regenerate the icons (green leaf, 16/48/128/300 px): `node tools/make-icons.mjs`. It has no dependencies and writes `icons/icon-*.png`.
 - Load it by hand: `chrome://extensions`, enable Developer mode, "Load unpacked", and select this folder.
 - Checkpoints: this folder is a local git repository. Commit after each change that passes `node tests/run-tests.mjs` and `npm run typecheck`.
 
