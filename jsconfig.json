@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "WebWorker"],
+    "types": ["chrome", "node"],
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": ["background.js", "js/*.js", "tests/*.mjs"],
+  "exclude": ["node_modules", "userscript.user.js"]
+}

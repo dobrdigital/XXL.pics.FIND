@@ -106,6 +106,7 @@ function urlCondition(url) {
 // Adds a rule that sets (or removes, for null/"") the given headers on requests
 // matching url. Returns the rule id, or null when there are no headers.
 async function addHeaderRule(url, headers, condition) {
+  /** @type {chrome.declarativeNetRequest.ModifyHeaderInfo[]} */
   const requestHeaders = Object.entries(headers || {}).map(([name, value]) =>
     value === null || value === undefined || value === ""
       ? { header: name, operation: "remove" }
@@ -172,15 +173,20 @@ async function runRequest(reqid, request) {
     : null;
 
   try {
-    webUrl(url); // throws for anything but http(s); reported as onerror below
-    // tabIds [TAB_ID_NONE] limits the rule to requests that do not come from a tab, which
-    // is how a service worker's fetch() is seen, so a page's own request to the same URL
-    // is never changed by this rule.
-    entry.ruleId = await addHeaderRule(url, request.headers, {
-      resourceTypes: XHR_TYPES,
-      tabIds: [chrome.tabs.TAB_ID_NONE],
-    });
+    // data: URLs need no network and no headers. Everything else must be http(s);
+    // webUrl throws for other schemes, which is reported as onerror below.
+    if (!/^data:/i.test(url)) {
+      webUrl(url);
+      // tabIds [TAB_ID_NONE] limits the rule to requests that do not come from a tab,
+      // which is how a service worker's fetch() is seen, so a page's own request to the
+      // same URL is never changed by this rule.
+      entry.ruleId = await addHeaderRule(url, request.headers, {
+        resourceTypes: XHR_TYPES,
+        tabIds: [chrome.tabs.TAB_ID_NONE],
+      });
+    }
 
+    /** @type {RequestInit} */
     const init = {
       method,
       credentials: request.anonymous ? "omit" : "include",
@@ -267,10 +273,13 @@ async function stashView(view) {
 // Reads and removes the entry. Returns null when it is missing or expired.
 async function takeView(key) {
   const name = VIEW_PREFIX + key;
-  const stored = await chrome.storage.session.get(name);
+  const entry = /** @type {{ expires: number, url: string, headers: object, mode?: string, saveAs?: boolean } | undefined} */ (
+    (await chrome.storage.session.get(name))[name]
+  );
   await chrome.storage.session.remove(name);
-  const { expires, ...view } = stored[name] || {};
-  return stored[name] && expires > Date.now() ? view : null;
+  if (!entry || !(entry.expires > Date.now())) return null;
+  const { expires, ...view } = entry;
+  return view;
 }
 
 async function openImageTab(imu, background, openerTabId) {

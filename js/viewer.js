@@ -3,8 +3,9 @@
 // content script uses, then shown from a blob URL.
 // In download mode (view.mode === "download") the same fetch is saved to disk
 // from a blob URL instead, and this tab closes when the download finishes.
-const status = document.getElementById("status");
-const image = document.getElementById("image");
+// Not named "status": that clashes with window.status in a classic script.
+const statusLine = /** @type {HTMLElement} */ (document.getElementById("status"));
+const image = /** @type {HTMLImageElement} */ (document.getElementById("image"));
 const key = new URLSearchParams(location.search).get("k");
 const events = new Map(); // proxy events by request id
 let requestId = null;
@@ -13,7 +14,7 @@ let view = null;
 const EXTENSIONS = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp", "image/avif": "avif", "image/svg+xml": "svg" };
 
 function fail(message) {
-  status.textContent = message;
+  statusLine.textContent = message;
   image.hidden = true;
 }
 
@@ -37,7 +38,7 @@ function show(event) {
   const blob = readBlob(event);
   if (!blob) return;
   image.onerror = () => fail("This link is not an image.");
-  image.onload = () => { status.textContent = ""; };
+  image.onload = () => { statusLine.textContent = ""; };
   image.src = URL.createObjectURL(blob);
   image.hidden = false;
 }
@@ -58,7 +59,7 @@ function save(event) {
   const blob = readBlob(event);
   if (!blob) return;
   const objectUrl = URL.createObjectURL(blob);
-  status.textContent = "Saving…";
+  statusLine.textContent = "Saving…";
   chrome.downloads.download({ url: objectUrl, filename: fileName(view.url, blob.type), saveAs: view.saveAs }, (downloadId) => {
     if (chrome.runtime.lastError || downloadId === undefined) {
       return fail(chrome.runtime.lastError ? chrome.runtime.lastError.message : "Download failed.");

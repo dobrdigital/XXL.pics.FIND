@@ -313,6 +313,8 @@ async function main() {
     // The proxy is for web images: it must not read extension or other internal URLs.
     const internal = await proxied({ url: `chrome-extension://${extId}/manifest.json`, responseType: "text" });
     check("proxy refuses non-http(s) URLs", internal?.event === "onerror", internal?.event);
+    const dataUrl = await proxied({ url: `data:image/png;base64,${PNG.toString("base64")}`, responseType: "blob" });
+    check("proxy still reads data: URLs", dataUrl?.event === "onload" && dataUrl.data._responseEncoded.value.length === PNG.length, dataUrl?.event);
 
     // Pending viewer data lives in chrome.storage.session, so it survives the worker
     // being stopped, and each key can be read once.

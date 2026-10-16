@@ -1,6 +1,6 @@
 // Global enable/disable toggle. The userscript reads the same "imu_enabled" key.
-const enable = document.getElementById("global-enable");
-const disable = document.getElementById("global-disable");
+const enable = /** @type {HTMLInputElement} */ (document.getElementById("global-enable"));
+const disable = /** @type {HTMLInputElement} */ (document.getElementById("global-disable"));
 
 chrome.storage.sync.get(["imu_enabled"], (data) => {
   (data.imu_enabled === "false" ? disable : enable).checked = true;
