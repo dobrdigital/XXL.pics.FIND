@@ -149,6 +149,16 @@ function startSite() {
 <a href="/full.png?w=1600&h=1066"><img src="/png?w=120&h=80"></a>
 <div style="width:50px;height:50px;background-image:url(/png?w=400&h=266)"></div>`);
     }
+    // Fourteen lazy-loading images: the page holds the real URL in data-original, so
+    // the scan has no size for them and the gallery has to measure them.
+    if (pathname === "/many-page") {
+      const imgs = Array.from({ length: 14 }, (_, i) => {
+        const w = 200 + i * 50;
+        return `<img src="/img.png" data-original="/png?w=${w}&h=${Math.round(w * 0.66)}" width="30">`;
+      }).join("");
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><title>many</title>${imgs}`);
+    }
     // Not decodable on purpose: the tests only need the request and its headers.
     if (pathname === "/clip.mp4") {
       res.writeHead(200, { "content-type": "video/mp4", "content-length": "2000" });
@@ -491,6 +501,72 @@ async function main() {
         && photo?.url === "https://pbs.twimg.com/media/ABCdef?format=jpg&name=orig" && photo.width === 4096
         && parsed.some((m) => m.kind === "stream") && parsed.some((m) => m.url.endsWith("/G.mp4")),
       `${parsed.length} items`);
+
+    // ---- reading image sizes from the first bytes ---------------------------
+
+    const sizeContext = {};
+    vm.createContext(sizeContext);
+    vm.runInContext(readFileSync(path.join(ROOT, "js", "imagesize.js"), "utf8"), sizeContext);
+    const readSize = (bytes) => JSON.stringify(sizeContext.imageSizeFromBytes(bytes));
+    const padTo = (parts, length = 64) => Buffer.concat([...parts, Buffer.alloc(Math.max(0, length - Buffer.concat(parts).length))]);
+    const u16 = (n) => Buffer.from([n >> 8, n & 255]);
+    const u32 = (n) => Buffer.from([n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255]);
+    const le24 = (n) => Buffer.from([n & 255, (n >> 8) & 255, (n >> 16) & 255]);
+    const jpeg = padTo([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.alloc(14), Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08]), u16(1066), u16(1600), Buffer.from([3])]);
+    const gif = padTo([Buffer.from("GIF89a"), Buffer.from([0x20, 0x03, 0x58, 0x02])]);
+    const webpX = padTo([Buffer.from("RIFF"), u32(0), Buffer.from("WEBPVP8X"), u32(10), Buffer.alloc(4), le24(1919), le24(1079)]);
+    const lossless = (1279) | (719 << 14);
+    const webpL = padTo([Buffer.from("RIFF"), u32(0), Buffer.from("WEBPVP8L"), u32(5), Buffer.from([0x2f, lossless & 255, (lossless >> 8) & 255, (lossless >> 16) & 255, (lossless >> 24) & 255])]);
+    const webpLossy = padTo([Buffer.from("RIFF"), u32(0), Buffer.from("WEBPVP8 "), u32(10), Buffer.from([0, 0, 0, 0x9d, 0x01, 0x2a, 640 & 255, 640 >> 8, 480 & 255, 480 >> 8])]);
+    const avif = padTo([u32(24), Buffer.from("ftypavif"), Buffer.alloc(4), Buffer.from("avifmif1"), u32(20), Buffer.from("ispe"), Buffer.alloc(4), u32(3000), u32(2000)]);
+    check("image size is read from PNG, JPEG, GIF, WebP (3 kinds) and AVIF headers",
+      readSize(makePng(321, 123)) === '{"width":321,"height":123}'
+        && readSize(jpeg) === '{"width":1600,"height":1066}'
+        && readSize(gif) === '{"width":800,"height":600}'
+        && readSize(webpX) === '{"width":1920,"height":1080}'
+        && readSize(webpL) === '{"width":1280,"height":720}'
+        && readSize(webpLossy) === '{"width":640,"height":480}'
+        && readSize(avif) === '{"width":3000,"height":2000}'
+        && sizeContext.imageSizeFromBytes(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'></svg>")) === null,
+      [readSize(jpeg), readSize(gif), readSize(webpX), readSize(webpL), readSize(webpLossy), readSize(avif)].join(" "));
+
+    // ---- gallery: nine at a time, sizes measured from the file header ---------
+
+    const manyPage = await openTarget(`${base}/many-page`);
+    await sleep(1000);
+    const manyTab = await popup.cdp.eval(`new Promise((r) => chrome.tabs.query({ url: ${JSON.stringify(base + "/many-page")} }, (tabs) => r(tabs.length ? tabs[0].id : -1)))`);
+    const manyScan = await send({ type: "scan_page", data: { tabId: manyTab } });
+    let manyGallery = null;
+    for (let i = 0; i < 50 && !manyGallery; i++) {
+      const targets = await getJson("/json/list");
+      manyGallery = targets.find((t) => t.url.includes("gallery.html") && t.url.includes(manyScan.data?.key)) || null;
+      if (!manyGallery) await sleep(100);
+    }
+    let firstPage = [];
+    let moreLabel = "";
+    let allCards = 0;
+    let moreHiddenAtEnd = false;
+    if (manyGallery) {
+      const gallery = openCdp(manyGallery.webSocketDebuggerUrl);
+      await gallery.ready;
+      const cardWidths = `[...document.querySelectorAll(".card img")].filter((i) => i.complete && i.naturalWidth).map((i) => i.naturalWidth)`;
+      for (let i = 0; i < 60 && firstPage.length < 9; i++) {
+        await sleep(200);
+        firstPage = await gallery.eval(cardWidths);
+      }
+      moreLabel = await gallery.eval(`document.getElementById("more").hidden ? "hidden" : document.getElementById("more").textContent`);
+      await gallery.eval(`document.getElementById("more").click(), true`);
+      await sleep(800);
+      allCards = await gallery.eval(`document.querySelectorAll(".card").length`);
+      moreHiddenAtEnd = await gallery.eval(`document.getElementById("more").hidden`);
+      gallery.close();
+      await closeTarget(manyGallery.id);
+    }
+    check("gallery shows only the 9 largest first, found by measuring file headers",
+      firstPage.join(",") === "850,800,750,700,650,600,550,500,450", firstPage.join(","));
+    check("SHOW NEXT adds the remaining images and then disappears", moreLabel === "SHOW NEXT 5" && allCards === 14 && moreHiddenAtEnd, `${moreLabel}, ${allCards} cards`);
+    manyPage.cdp.close();
+    await closeTarget(manyPage.target.id);
 
     browser.close();
   } finally {

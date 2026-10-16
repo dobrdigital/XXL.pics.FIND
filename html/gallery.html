@@ -26,6 +26,9 @@
     button, .actions a { font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--accent); border-radius: 5px;
                          background: none; color: var(--accent); cursor: pointer; text-decoration: none; }
     #empty { margin-top: 24px; color: GrayText; }
+    #more { display: block; margin: 20px auto 0; padding: 10px 28px; font-size: 14px; font-weight: 700; letter-spacing: .04em;
+            color: #fff; background: var(--accent); border: 0; border-radius: 8px; }
+    #more[hidden] { display: none; }
     footer { margin-top: 24px; color: GrayText; font-size: 12px; text-align: center; }
   </style>
 </head>
@@ -45,7 +48,9 @@
   </header>
   <main id="grid"></main>
   <p id="empty" hidden>No images found on this page.</p>
+  <button id="more" type="button" hidden>SHOW NEXT 9</button>
   <footer>&copy; DEV + DESIGN = REAILISM</footer>
+  <script src="../js/imagesize.js"></script>
   <script src="../js/gallery.js"></script>
 </body>
 </html>

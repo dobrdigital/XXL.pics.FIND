@@ -1,52 +1,95 @@
-// Shows the images the background worker found on a page, largest first. The list
-// comes from chrome.storage.session under the key in ?k=. Sizes in the list come from
-// the markup (srcset widths, rendered size) and are often missing, so each image is
-// loaded here and ordered by its real pixel size.
+// Shows the images, videos and streams the background worker found on a page, largest
+// first, nine at a time. The list comes from chrome.storage.session under the key in
+// ?k=. Loading every preview at once is slow and heavy, so cards are only created for
+// the nine being shown; "Show next 9" adds the next nine.
+//
+// Sizes in the list come from the markup and are often missing. For images without
+// one, the first 64 KB of the file is fetched and its size read from the header
+// (js/imagesize.js), which is far cheaper than loading the whole picture.
+const PAGE_SIZE = 9;
+const MEASURE_LIMIT = 8; // concurrent size probes
+const MEASURE_WAIT_MS = 4000; // the first page waits this long for sizes at most
+
 const grid = document.getElementById("grid");
 const title = document.getElementById("title");
 const count = document.getElementById("count");
 const empty = document.getElementById("empty");
+const more = /** @type {HTMLButtonElement} */ (document.getElementById("more"));
 const minSelect = /** @type {HTMLSelectElement} */ (document.getElementById("min"));
 const scanKey = new URLSearchParams(location.search).get("k");
 
-/** @type {{ item: { url: string, kind?: string, source: string, width: number, height: number, bytes?: number, bitrate?: number }, card: HTMLElement, img: HTMLImageElement, failed: boolean, loaded: boolean, dim: HTMLElement, measured?: { width: number, height: number } }[]} */
-const entries = [];
+/** @typedef {{ url: string, kind?: string, source: string, width: number, height: number, bytes?: number, bitrate?: number }} Item */
+/** @type {Item[]} */
+let items = [];
+/** @type {Item[]} items that have no card yet */
+let pending = [];
+let shown = 0;
 let pageUrl = "";
-let renderQueued = false;
 
-function sizeOf(entry) {
-  if (entry.loaded && entry.measured) return entry.measured;
-  return { width: entry.item.width, height: entry.item.height };
+// Video and stream files usually have no size in the list. They are ranked as if they
+// were full HD so they appear on the first pages instead of at the very end.
+const ASSUMED_VIDEO = 1920 * 1080;
+
+function areaOf(item) {
+  const area = item.width * item.height;
+  if (area > 0) return area;
+  return item.kind === "video" || item.kind === "stream" ? ASSUMED_VIDEO : 0;
 }
 
-function areaOf(entry) {
-  const { width, height } = sizeOf(entry);
-  return width * height;
+// Largest first; the same area is ordered by file size, then bitrate.
+function bySize(a, b) {
+  return areaOf(b) - areaOf(a) || (b.bytes || 0) - (a.bytes || 0) || (b.bitrate || 0) - (a.bitrate || 0);
 }
 
-// Sorts the cards by pixel area and hides those under the chosen size. An image whose
-// size is still unknown stays visible until it has loaded.
-function render() {
-  renderQueued = false;
+// An image is hidden by the size filter only when its size is known and too small.
+function passesFilter(item) {
   const min = Number(minSelect.value);
-  entries.sort((a, b) => areaOf(b) - areaOf(a));
-  let shown = 0;
-  for (const entry of entries) {
-    const { width, height } = sizeOf(entry);
-    const known = entry.loaded || entry.failed || (width > 0 && height > 0);
-    entry.card.hidden = known && !entry.failed && Math.min(width, height) < min;
-    if (!entry.card.hidden) shown++;
-    grid.appendChild(entry.card); // moves the card into its sorted position
-  }
-  count.textContent = shown + " of " + entries.length + " images";
-  empty.hidden = entries.length > 0;
+  return !(item.width > 0 && item.height > 0 && Math.min(item.width, item.height) < min);
 }
 
-function queueRender() {
-  if (!renderQueued) {
-    renderQueued = true;
-    requestAnimationFrame(render);
+// Reads sizes for the images that have none, a few at a time. Resolves when all are done.
+async function measureAll() {
+  const todo = items.filter((item) => (item.kind || "image") === "image" && !(item.width > 0 && item.height > 0));
+  let next = 0;
+  async function worker() {
+    while (next < todo.length) {
+      const item = todo[next++];
+      const size = await probeImageSize(item.url);
+      if (size) {
+        item.width = size.width;
+        item.height = size.height;
+        if (size.bytes) item.bytes = size.bytes;
+      }
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(MEASURE_LIMIT, todo.length) }, worker));
+}
+
+function updateControls() {
+  const left = pending.filter(passesFilter).length;
+  count.textContent = shown + " shown" + (left ? ", " + left + " more" : "");
+  more.hidden = left === 0;
+  more.textContent = "SHOW NEXT " + Math.min(PAGE_SIZE, left);
+  empty.hidden = items.length > 0;
+}
+
+// Adds the next nine cards. The pending list is ranked again each time, because sizes
+// keep arriving while the user looks at the first page.
+function showNext() {
+  pending = pending.filter(passesFilter).sort(bySize);
+  for (const item of pending.splice(0, PAGE_SIZE)) {
+    grid.appendChild(makeCard(item));
+    shown++;
+  }
+  updateControls();
+}
+
+// Starts again from the first nine, after the size filter changed.
+function restart() {
+  grid.replaceChildren();
+  shown = 0;
+  pending = items.slice();
+  showNext();
 }
 
 // Reads a master playlist and shows the best variant it lists. The gallery is an
@@ -72,6 +115,7 @@ function describeStream(url, label) {
   });
 }
 
+/** @param {Item} item */
 function makeCard(item) {
   const card = document.createElement("figure");
   card.className = "card";
@@ -109,7 +153,7 @@ function makeCard(item) {
   const caption = document.createElement("figcaption");
   const dim = document.createElement("span");
   dim.className = "dim";
-  dim.textContent = item.width && item.height ? item.width + " × " + item.height + " (declared)" : "size unknown";
+  dim.textContent = item.width && item.height ? item.width + " × " + item.height : "size unknown";
   const extra = [];
   if (item.bytes) extra.push((item.bytes / 1048576).toFixed(1) + " MB");
   if (item.bitrate) extra.push(Math.round(item.bitrate / 1000) + " kbps");
@@ -145,24 +189,17 @@ function makeCard(item) {
   caption.append(dim, meta, actions);
   card.append(thumb, caption);
 
-  const entry = { item, card, img, failed: false, loaded: false, dim };
   if (kind === "stream") {
-    // Nothing to load: a playlist is shown as text. Its best variant is looked up below.
-    entry.loaded = false;
     describeStream(item.url, dim);
-    return entry;
+    return card;
   }
   img.addEventListener(kind === "video" ? "loadedmetadata" : "load", () => {
-    entry.loaded = true;
     const player = /** @type {HTMLVideoElement} */ (/** @type {unknown} */ (img));
     const width = kind === "video" ? player.videoWidth : img.naturalWidth;
     const height = kind === "video" ? player.videoHeight : img.naturalHeight;
     dim.textContent = width + " × " + height;
-    entry.measured = { width, height };
-    queueRender();
   });
   img.addEventListener("error", () => {
-    entry.failed = true;
     card.classList.add("failed");
     // The image needs headers (usually the page as Referer). The viewer fetches it
     // through the worker's proxy, so Open goes there instead of a plain tab.
@@ -170,17 +207,17 @@ function makeCard(item) {
       event.preventDefault();
       chrome.runtime.sendMessage({ type: "newtab", data: { imu: { url: item.url, headers: { Referer: pageUrl } } } });
     });
-    queueRender();
   });
-  return entry;
+  return card;
 }
 
-minSelect.addEventListener("change", render);
+more.addEventListener("click", showNext);
+minSelect.addEventListener("change", restart);
 
 (async () => {
   const name = "scan:" + scanKey;
   const stored = await chrome.storage.session.get(name);
-  const scan = /** @type {{ pageUrl: string, title: string, items: { url: string, source: string, width: number, height: number }[] } | undefined} */ (stored[name]);
+  const scan = /** @type {{ pageUrl: string, title: string, items: Item[] } | undefined} */ (stored[name]);
   if (!scan) {
     title.textContent = "This list has expired. Run the scan again from the page.";
     empty.hidden = true;
@@ -189,10 +226,14 @@ minSelect.addEventListener("change", render);
   pageUrl = scan.pageUrl;
   title.textContent = scan.title ? "Largest images on: " + scan.title : "Largest images on this page";
   document.title = title.textContent;
-  for (const item of scan.items) {
-    const entry = makeCard(item);
-    entries.push(entry);
-    grid.appendChild(entry.card);
-  }
-  render();
+  items = scan.items;
+
+  // The first nine wait for sizes, but not for long. Probes that are still running keep
+  // going and improve the order of the nine after that.
+  count.textContent = "Measuring " + items.length + " images…";
+  const measuring = measureAll();
+  await Promise.race([measuring, new Promise((resolve) => setTimeout(resolve, MEASURE_WAIT_MS))]);
+  restart();
+  await measuring;
+  updateControls();
 })();
