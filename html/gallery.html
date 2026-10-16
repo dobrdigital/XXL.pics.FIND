@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Largest images on this page</title>
+  <style>
+    :root { color-scheme: light dark; --accent: #0a6cff; --line: #8885; }
+    body { margin: 0; padding: 0 16px 24px; font: 14px/1.4 system-ui, sans-serif; }
+    header { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+             padding: 12px 0; background: Canvas; border-bottom: 1px solid var(--line); }
+    h1 { flex: 1 1 100%; margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+    #count { color: GrayText; }
+    #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 14px; }
+    .card { margin: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+    .card[hidden] { display: none; }
+    .thumb { display: flex; align-items: center; justify-content: center; height: 180px; background: #8882; }
+    .thumb img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .card.failed .thumb::after { content: "Could not load here"; color: GrayText; padding: 8px; text-align: center; }
+    figcaption { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; }
+    .dim { font-weight: 600; }
+    .meta { color: GrayText; font-size: 12px; overflow-wrap: anywhere; }
+    .actions { display: flex; gap: 6px; margin-top: 4px; }
+    button, .actions a { font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--accent); border-radius: 5px;
+                         background: none; color: var(--accent); cursor: pointer; text-decoration: none; }
+    #empty { margin-top: 24px; color: GrayText; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">Largest images on this page</h1>
+    <label>Smallest side at least
+      <select id="min">
+        <option value="0">any</option>
+        <option value="100" selected>100 px</option>
+        <option value="300">300 px</option>
+        <option value="600">600 px</option>
+        <option value="1000">1000 px</option>
+      </select>
+    </label>
+    <span id="count"></span>
+  </header>
+  <main id="grid"></main>
+  <p id="empty" hidden>No images found on this page.</p>
+  <script src="../js/gallery.js"></script>
+</body>
+</html>

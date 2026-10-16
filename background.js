@@ -19,6 +19,10 @@
 // extension, so they go through temporary declarativeNetRequest session rules.
 
 const MENU_ID = "imu-find-larger";
+const SCAN_MENU_ID = "imu-scan-page";
+const SCAN_PREFIX = "scan:";
+const SCAN_TTL_MS = 60 * 60_000; // gallery data is dropped after an hour
+const MAX_SCAN_ITEMS = 400;
 const RULE_TTL_MS = 60_000; // also the life of a pending viewer entry
 const RULE_ALARM_PREFIX = "imu-rule-";
 const VIEW_PREFIX = "view:";
@@ -46,13 +50,22 @@ function setContextMenu(enabled) {
         title: "Try to find larger image",
         contexts: ["page", "link", "image", "video", "audio"],
       });
+      // Works anywhere on the page, not only over an image.
+      chrome.contextMenus.create({
+        id: SCAN_MENU_ID,
+        title: "Find largest images on this page",
+        contexts: ["page", "link", "image", "video", "audio"],
+      });
     }
   });
 }
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === MENU_ID && tab) {
+  if (!tab || tab.id === undefined) return;
+  if (info.menuItemId === MENU_ID) {
     chrome.tabs.sendMessage(tab.id, { type: "context_imu" }).catch(() => {});
+  } else if (info.menuItemId === SCAN_MENU_ID) {
+    scanPage(tab.id).catch(() => {}); // pages Chrome does not allow scripts on do nothing
   }
 });
 
@@ -293,6 +306,103 @@ async function openImageTab(imu, background, openerTabId) {
   return chrome.tabs.create({ ...options, url: chrome.runtime.getURL("html/viewer.html?k=" + key) });
 }
 
+// ---- page scan: find the largest pictures on the page ------------------------
+
+// Runs inside the page: chrome.scripting.executeScript serialises this function, so it
+// must not use anything else from this file. It returns every image URL the page
+// offers, with the best size the markup gives. The gallery page measures real sizes.
+function collectImages() {
+  const found = new Map(); // absolute URL -> { url, source, width, height }
+  const IMAGE_FILE = /\.(?:jpe?g|png|gif|webp|avif|bmp|svg|tiff?)(?:[?#]|$)/i;
+
+  function add(raw, source, width = 0, height = 0) {
+    if (!raw) return;
+    let url;
+    try {
+      url = new URL(raw.trim(), document.baseURI).href;
+    } catch (error) {
+      return;
+    }
+    if (!/^https?:/i.test(url)) return;
+    const known = found.get(url);
+    if (!known || width * height > known.width * known.height) {
+      found.set(url, { url, source: known ? known.source : source, width, height });
+    }
+  }
+
+  // "a.jpg 480w, b.jpg 2x" -> [{ url, width }]. Commas inside a URL are kept: a
+  // candidate ends at a comma that follows a descriptor, or at a comma and a space.
+  function addSrcset(value, source) {
+    for (const part of value.split(/(?<=\d[wx]),\s*|,\s+/)) {
+      const match = part.trim().match(/^(\S+)(?:\s+(\d+(?:\.\d+)?)([wx]))?$/);
+      if (match) add(match[1], source, match[3] === "w" ? Number(match[2]) : 0);
+    }
+  }
+
+  for (const img of document.images) {
+    add(img.currentSrc || img.src, "img", img.naturalWidth, img.naturalHeight);
+    // Lazy-loading sites keep the real URL in data-* attributes of every kind.
+    for (const attr of img.attributes) {
+      if (attr.value.length > 2000) continue;
+      if (/srcset/i.test(attr.name)) {
+        addSrcset(attr.value, "srcset");
+      } else if (/^(?:https?:)?\/\/\S+$|^\/\S+$/.test(attr.value) &&
+                 (IMAGE_FILE.test(attr.value) || /src|original|large|full|zoom|lazy|img|image/i.test(attr.name))) {
+        add(attr.value, "attribute");
+      }
+    }
+  }
+  for (const source of document.querySelectorAll("source[srcset], source[data-srcset]")) {
+    addSrcset(source.getAttribute("srcset") || source.getAttribute("data-srcset") || "", "srcset");
+  }
+  // Links that go straight to an image file are usually the full-size original.
+  for (const link of /** @type {NodeListOf<HTMLAnchorElement>} */ (document.querySelectorAll("a[href]"))) {
+    if (IMAGE_FILE.test(link.href)) add(link.href, "link");
+  }
+  for (const meta of document.querySelectorAll("meta[property^='og:image'], meta[name^='twitter:image'], link[rel='image_src']")) {
+    add(meta.getAttribute("content") || meta.getAttribute("href"), "meta");
+  }
+  for (const video of document.querySelectorAll("video[poster]")) add(video.getAttribute("poster"), "poster");
+
+  // CSS background images. Capped, because getComputedStyle on a huge page is slow.
+  let scanned = 0;
+  for (const element of document.querySelectorAll("body *")) {
+    if (++scanned > 4000) break;
+    const background = getComputedStyle(element).backgroundImage;
+    if (!background || background === "none") continue;
+    for (const match of background.matchAll(/url\((["']?)(.*?)\1\)/g)) add(match[2], "background");
+  }
+  return [...found.values()];
+}
+
+// Scans every frame of the tab, merges the results and opens the gallery page.
+async function scanPage(tabId) {
+  const frames = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: collectImages });
+  const merged = new Map();
+  for (const frame of frames) {
+    for (const item of frame.result || []) {
+      const known = merged.get(item.url);
+      if (!known || item.width * item.height > known.width * known.height) merged.set(item.url, item);
+    }
+  }
+  const items = [...merged.values()]
+    .sort((a, b) => b.width * b.height - a.width * a.height)
+    .slice(0, MAX_SCAN_ITEMS);
+
+  // Old scans are dropped here, so session storage does not fill up over a long session.
+  const stored = await chrome.storage.session.get(null);
+  const stale = Object.keys(stored).filter((name) => name.startsWith(SCAN_PREFIX) && /** @type {{ created: number }} */ (stored[name]).created < Date.now() - SCAN_TTL_MS);
+  if (stale.length) await chrome.storage.session.remove(stale);
+
+  const tab = await chrome.tabs.get(tabId);
+  const key = crypto.randomUUID();
+  await chrome.storage.session.set({
+    [SCAN_PREFIX + key]: { created: Date.now(), pageUrl: tab.url || "", title: tab.title || "", items },
+  });
+  await chrome.tabs.create({ url: chrome.runtime.getURL("html/gallery.html?k=" + key), openerTabId: tabId });
+  return { key, count: items.length };
+}
+
 // ---- cookies, storage, libraries, history ----------------------------------
 
 async function cookieHeader(url) {
@@ -352,6 +462,17 @@ const handlers = {
   async newtab(message, sender) {
     await openImageTab(message.data.imu, message.data.background, sender.tab && sender.tab.id);
     return { type: "newtab" };
+  },
+
+  // Sent by the toolbar popup. Without a tabId the active tab of the current window is used.
+  async scan_page(message) {
+    let tabId = message.data && message.data.tabId;
+    if (tabId === undefined) {
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      tabId = active && active.id;
+    }
+    if (tabId === undefined) throw new Error("no active tab");
+    return { type: "scan_page", data: await scanPage(tabId) };
   },
 
   async getcookies(message) {

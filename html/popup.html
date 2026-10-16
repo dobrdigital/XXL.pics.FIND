@@ -14,6 +14,10 @@
     .toggle label { flex: 1; padding: 6px 0; text-align: center; color: var(--accent); cursor: pointer; }
     .toggle input:checked + label { background: var(--accent); color: #fff; }
     .toggle input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+    #scan { display: block; width: 100%; margin-top: 10px; padding: 7px 0; font: inherit; color: #fff;
+            background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+    #scan:disabled { opacity: .6; cursor: default; }
+    #scan-status { margin: 6px 0 0; min-height: 1.4em; color: GrayText; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -24,6 +28,8 @@
     <input type="radio" name="global-status" id="global-disable">
     <label for="global-disable">Global Disable</label>
   </div>
+  <button id="scan" type="button">Find largest images on this page</button>
+  <p id="scan-status" role="status"></p>
   <script src="../js/popup.js"></script>
 </body>
 </html>

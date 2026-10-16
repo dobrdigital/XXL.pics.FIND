@@ -28,6 +28,7 @@ A Chrome Manifest V3 port of "Larger image finder" 0.8.0, which was MV2 and is n
   - `override_next_headers`: the same kind of rule, but for the page's next `<img>` / media load of that URL, so it matches `image` and `media` as well as XHR types.
   - `download`, `newtab`: images that need headers are handed to the viewer page. Others use `chrome.downloads` or `chrome.tabs` directly.
   - `getcookies`, `getvalue`, `setvalue`, `get_lib`, `add_to_history`.
+  - `scan_page`: "Find largest images on this page" (context menu item and popup button). `collectImages` is injected on demand with `chrome.scripting` into all frames, so it costs nothing on ordinary pages. It gathers img/srcset/lazy attributes, links to image files, og:image, video posters and CSS backgrounds. `html/gallery.html` + `js/gallery.js` load them and sort by real pixel size.
   - Service worker state: nothing is kept only in memory. Pending viewer entries are in `chrome.storage.session` (`view:<key>`, one-time, 60 s). Rule ids are random and rules expire through `chrome.alarms`, so a stopped and restarted worker loses nothing.
   - Context menu "Try to find larger image", which sends `{type: "context_imu"}` to the tab.
 - `html/viewer.html` + `js/viewer.js`: opened for images that need headers. It fetches them through the proxy and either shows the image or saves it from a blob URL (download mode), then closes itself.

@@ -11,3 +11,19 @@ for (const input of [enable, disable]) {
     chrome.storage.sync.set({ imu_enabled: String(input === enable) });
   });
 }
+
+// Scan the active tab for its largest pictures. The worker opens the gallery page.
+const scan = /** @type {HTMLButtonElement} */ (document.getElementById("scan"));
+const scanStatus = /** @type {HTMLElement} */ (document.getElementById("scan-status"));
+scan.addEventListener("click", () => {
+  scan.disabled = true;
+  scanStatus.textContent = "Scanning…";
+  chrome.runtime.sendMessage({ type: "scan_page" }, (reply) => {
+    if (chrome.runtime.lastError || !reply || reply.error) {
+      scan.disabled = false;
+      scanStatus.textContent = "This page cannot be scanned.";
+      return;
+    }
+    window.close();
+  });
+});

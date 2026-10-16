@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -19,6 +20,31 @@ const PNG = Buffer.from(
 );
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const outcomes = [];
+
+// A solid grey PNG of the given size, so the tests can tell images apart by real size.
+function makePng(width, height) {
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const out = Buffer.alloc(body.length + 8);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(zlib.crc32(body), body.length + 4);
+    return out;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  const row = Buffer.alloc(1 + width * 3, 0x80);
+  row[0] = 0;
+  const raw = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 function check(name, ok, detail = "") {
   outcomes.push(ok);
@@ -107,6 +133,20 @@ function startSite() {
     if (pathname === "/last") {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ referer: lastReferer }));
+    }
+    if (pathname === "/png" || pathname === "/full.png") {
+      const params = new URL(req.url, "http://site").searchParams;
+      res.writeHead(200, { "content-type": "image/png" });
+      return res.end(makePng(Number(params.get("w")), Number(params.get("h"))));
+    }
+    // One image per place a page can hide a larger version of a picture.
+    if (pathname === "/scan-page") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><title>scan page</title>
+<meta property="og:image" content="/png?w=1200&h=800">
+<img src="/png?w=100&h=66" srcset="/png?w=100&h=66 100w, /png?w=800&h=533 800w" sizes="50px">
+<a href="/full.png?w=1600&h=1066"><img src="/png?w=120&h=80"></a>
+<div style="width:50px;height:50px;background-image:url(/png?w=400&h=266)"></div>`);
     }
     if (pathname === "/page") {
       res.writeHead(200, { "content-type": "text/html" });
@@ -326,6 +366,48 @@ async function main() {
     const first = await send({ type: "get_view", data: { key: "test-key" } });
     const second = await send({ type: "get_view", data: { key: "test-key" } });
     check("get_view survives a worker restart and is one-time", first.data?.url === `${base}/img.png` && second.data === null);
+
+    // ---- page scan and gallery ----------------------------------------------
+
+    const scanPage = await openTarget(`${base}/scan-page`);
+    await sleep(1000);
+    const scanTab = await popup.cdp.eval(`new Promise((r) => chrome.tabs.query({ url: ${JSON.stringify(base + "/scan-page")} }, (tabs) => r(tabs.length ? tabs[0].id : -1)))`);
+    const scanned = await send({ type: "scan_page", data: { tabId: scanTab } });
+    const scanStored = await popup.cdp.eval(`new Promise((r) => chrome.storage.session.get(${JSON.stringify("scan:" + scanned.data?.key)}, r))`);
+    const items = scanStored[`scan:${scanned.data?.key}`]?.items ?? [];
+    const widths = items.map((item) => Number(new URL(item.url).searchParams.get("w"))).sort((a, b) => b - a);
+    check("scan finds img, srcset, link, background and og:image", widths.join(",") === "1600,1200,800,400,120,100", widths.join(","));
+    const sources = new Set(items.map((item) => item.source));
+    check("scan records where each image came from", ["img", "srcset", "link", "meta", "background"].every((s) => sources.has(s)), [...sources].join(","));
+
+    // The gallery opens by itself; it must list the images largest first, by real size.
+    let galleryTarget = null;
+    for (let i = 0; i < 50 && !galleryTarget; i++) {
+      const targets = await getJson("/json/list");
+      galleryTarget = targets.find((t) => t.url.includes("gallery.html")) || null;
+      if (!galleryTarget) await sleep(100);
+    }
+    let order = [];
+    let orderAll = [];
+    if (galleryTarget) {
+      const gallery = openCdp(galleryTarget.webSocketDebuggerUrl);
+      await gallery.ready;
+      const visibleWidths = `[...document.querySelectorAll(".card:not([hidden]) img")].filter((i) => i.complete && i.naturalWidth).map((i) => i.naturalWidth)`;
+      for (let i = 0; i < 60 && order.length < 4; i++) {
+        await sleep(150);
+        order = await gallery.eval(visibleWidths);
+      }
+      // The default filter hides images whose smallest side is under 100 px; "any" shows all.
+      await gallery.eval(`(() => { const s = document.getElementById("min"); s.value = "0"; s.dispatchEvent(new Event("change")); return true; })()`);
+      await sleep(300);
+      orderAll = await gallery.eval(visibleWidths);
+      gallery.close();
+      await closeTarget(galleryTarget.id);
+    }
+    check("gallery lists the images largest first, hiding tiny ones by default", order.join(",") === "1600,1200,800,400", order.join(","));
+    check("gallery shows every image when the size filter is off", orderAll.join(",") === "1600,1200,800,400,120,100", orderAll.join(","));
+    scanPage.cdp.close();
+    await closeTarget(scanPage.target.id);
 
     browser.close();
   } finally {
