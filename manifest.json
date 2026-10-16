@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_name__",
   "description": "__MSG_description__",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minimum_chrome_version": "120",
   "default_locale": "en",
   "icons": {
@@ -31,6 +31,29 @@
       "js": [
         "userscript.user.js"
       ]
+    },
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*",
+        "https://mobile.twitter.com/*"
+      ],
+      "js": [
+        "js/media-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*",
+        "https://mobile.twitter.com/*"
+      ],
+      "js": [
+        "js/media-relay.js"
+      ],
+      "run_at": "document_start"
     }
   ],
   "options_ui": {
@@ -41,6 +64,7 @@
     "alarms",
     "scripting",
     "storage",
+    "webRequest",
     "contextMenus",
     "downloads",
     "cookies",

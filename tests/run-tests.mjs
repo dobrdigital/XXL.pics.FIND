@@ -4,10 +4,11 @@
 // Usage: node tests/run-tests.mjs
 // Environment: CHROME_PATH (default: Chrome under Program Files), CDP_PORT (default 9333).
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
@@ -147,6 +148,28 @@ function startSite() {
 <img src="/png?w=100&h=66" srcset="/png?w=100&h=66 100w, /png?w=800&h=533 800w" sizes="50px">
 <a href="/full.png?w=1600&h=1066"><img src="/png?w=120&h=80"></a>
 <div style="width:50px;height:50px;background-image:url(/png?w=400&h=266)"></div>`);
+    }
+    // Not decodable on purpose: the tests only need the request and its headers.
+    if (pathname === "/clip.mp4") {
+      res.writeHead(200, { "content-type": "video/mp4", "content-length": "2000" });
+      return res.end(Buffer.alloc(2000, 1));
+    }
+    if (pathname === "/live.m3u8") {
+      res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+      return res.end([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360",
+        "low.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080",
+        "high.m3u8",
+        "",
+      ].join("\n"));
+    }
+    if (pathname === "/media-page") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><title>media page</title>
+<video src="/clip.mp4" muted preload="auto"></video>
+<script>fetch("/live.m3u8").then((r) => r.text());</script>`);
     }
     if (pathname === "/page") {
       res.writeHead(200, { "content-type": "text/html" });
@@ -408,6 +431,66 @@ async function main() {
     check("gallery shows every image when the size filter is off", orderAll.join(",") === "1600,1200,800,400,120,100", orderAll.join(","));
     scanPage.cdp.close();
     await closeTarget(scanPage.target.id);
+
+    // ---- video, streams and the X response parser --------------------------
+
+    const mediaPage = await openTarget(`${base}/media-page`);
+    await sleep(2500);
+    const mediaTab = await popup.cdp.eval(`new Promise((r) => chrome.tabs.query({ url: ${JSON.stringify(base + "/media-page")} }, (tabs) => r(tabs.length ? tabs[0].id : -1)))`);
+    const mediaScan = await send({ type: "scan_page", data: { tabId: mediaTab } });
+    const mediaStored = await popup.cdp.eval(`new Promise((r) => chrome.storage.session.get(${JSON.stringify("scan:" + mediaScan.data?.key)}, r))`);
+    const mediaItems = mediaStored[`scan:${mediaScan.data?.key}`]?.items ?? [];
+    const video = mediaItems.find((item) => item.url.endsWith("/clip.mp4"));
+    const stream = mediaItems.find((item) => item.url.endsWith("/live.m3u8"));
+    check("scan lists a <video> file and its size from the network", video?.kind === "video" && video.bytes === 2000, JSON.stringify(video));
+    check("scan lists an HLS playlist loaded by script", stream?.kind === "stream" && stream.source === "network", JSON.stringify(stream));
+
+    let mediaGallery = null;
+    for (let i = 0; i < 50 && !mediaGallery; i++) {
+      const targets = await getJson("/json/list");
+      mediaGallery = targets.find((t) => t.url.includes("gallery.html") && t.url.includes(mediaScan.data?.key)) || null;
+      if (!mediaGallery) await sleep(100);
+    }
+    let streamText = "";
+    let hasPlayer = false;
+    if (mediaGallery) {
+      const gallery = openCdp(mediaGallery.webSocketDebuggerUrl);
+      await gallery.ready;
+      for (let i = 0; i < 40 && !/best variant/.test(streamText); i++) {
+        await sleep(150);
+        streamText = await gallery.eval(`[...document.querySelectorAll(".card")].map((c) => c.textContent).filter((t) => t.includes("live.m3u8")).join(" ")`);
+      }
+      hasPlayer = await gallery.eval(`document.querySelectorAll(".card video").length > 0`);
+      gallery.close();
+      await closeTarget(mediaGallery.id);
+    }
+    check("gallery plays video files and reads the best stream variant", hasPlayer && /best variant: 1920x1080 · 5000 kbps/.test(streamText), streamText.slice(0, 80));
+    mediaPage.cdp.close();
+    await closeTarget(mediaPage.target.id);
+
+    // The X parser: a response shaped like TweetResultByRestId (yt-dlp's reference).
+    const hookContext = { module: { exports: {} }, window: { location: { hostname: "example.test" } } };
+    vm.runInNewContext(readFileSync(path.join(ROOT, "js", "media-hook.js"), "utf8"), hookContext);
+    const tweet = { data: { tweetResult: { result: { legacy: {
+      extended_entities: { media: [
+        { type: "video", media_url_https: "https://pbs.twimg.com/amplify_video_thumb/1/img/a.jpg", video_info: { variants: [
+          { content_type: "application/x-mpegURL", url: "https://video.twimg.com/amplify_video/1/pl/x.m3u8?tag=14" },
+          { bitrate: 832000, content_type: "video/mp4", url: "https://video.twimg.com/amplify_video/1/vid/avc1/480x270/a.mp4?tag=14" },
+          { bitrate: 2176000, content_type: "video/mp4", url: "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4?tag=14" },
+        ] } },
+        { type: "photo", media_url_https: "https://pbs.twimg.com/media/ABCdef.jpg", original_info: { width: 4096, height: 2731 } },
+      ] },
+    }, quoted_status_result: { result: { legacy: { extended_entities: { media: [
+      { type: "animated_gif", video_info: { variants: [{ bitrate: 0, content_type: "video/mp4", url: "https://video.twimg.com/tweet_video/G.mp4" }] } },
+    ] } } } } } } } };
+    const parsed = hookContext.module.exports.extractMedia(tweet);
+    const best = parsed.filter((m) => m.kind === "video").sort((a, b) => b.bitrate - a.bitrate)[0];
+    const photo = parsed.find((m) => m.kind === "image");
+    check("X parser finds every video variant, the original photo and quoted media",
+      parsed.length === 5 && best?.width === 1280 && best.height === 720 && best.bitrate === 2176000
+        && photo?.url === "https://pbs.twimg.com/media/ABCdef?format=jpg&name=orig" && photo.width === 4096
+        && parsed.some((m) => m.kind === "stream") && parsed.some((m) => m.url.endsWith("/G.mp4")),
+      `${parsed.length} items`);
 
     browser.close();
   } finally {

@@ -23,6 +23,9 @@ const SCAN_MENU_ID = "imu-scan-page";
 const SCAN_PREFIX = "scan:";
 const SCAN_TTL_MS = 60 * 60_000; // gallery data is dropped after an hour
 const MAX_SCAN_ITEMS = 400;
+const NET_PREFIX = "net:"; // video/stream files seen on the network, per tab
+const MEDIA_PREFIX = "media:"; // media a site's own API returned (see js/media-hook.js), per tab
+const MAX_CAPTURED = 300;
 const RULE_TTL_MS = 60_000; // also the life of a pending viewer entry
 const RULE_ALARM_PREFIX = "imu-rule-";
 const VIEW_PREFIX = "view:";
@@ -315,7 +318,7 @@ function collectImages() {
   const found = new Map(); // absolute URL -> { url, source, width, height }
   const IMAGE_FILE = /\.(?:jpe?g|png|gif|webp|avif|bmp|svg|tiff?)(?:[?#]|$)/i;
 
-  function add(raw, source, width = 0, height = 0) {
+  function add(raw, source, width = 0, height = 0, kind = "image") {
     if (!raw) return;
     let url;
     try {
@@ -326,7 +329,7 @@ function collectImages() {
     if (!/^https?:/i.test(url)) return;
     const known = found.get(url);
     if (!known || width * height > known.width * known.height) {
-      found.set(url, { url, source: known ? known.source : source, width, height });
+      found.set(url, { url, kind, source: known ? known.source : source, width, height });
     }
   }
 
@@ -363,6 +366,13 @@ function collectImages() {
     add(meta.getAttribute("content") || meta.getAttribute("href"), "meta");
   }
   for (const video of document.querySelectorAll("video[poster]")) add(video.getAttribute("poster"), "poster");
+  // Video files. blob: sources (MSE players) are skipped: they only exist inside the page,
+  // and the network capture below finds the real files behind them.
+  for (const video of document.querySelectorAll("video")) {
+    const sources = [video.currentSrc, video.getAttribute("src")];
+    for (const child of video.querySelectorAll("source[src]")) sources.push(child.getAttribute("src"));
+    for (const src of sources) add(src, "video", video.videoWidth, video.videoHeight, "video");
+  }
 
   // CSS background images. Capped, because getComputedStyle on a huge page is slow.
   let scanned = 0;
@@ -379,14 +389,35 @@ function collectImages() {
 async function scanPage(tabId) {
   const frames = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: collectImages });
   const merged = new Map();
-  for (const frame of frames) {
-    for (const item of frame.result || []) {
-      const known = merged.get(item.url);
-      if (!known || item.width * item.height > known.width * known.height) merged.set(item.url, item);
+  const merge = (item) => {
+    const candidate = { kind: "image", width: 0, height: 0, ...item };
+    const known = merged.get(candidate.url);
+    if (!known) {
+      merged.set(candidate.url, candidate);
+      return;
     }
+    // The same file can come from the markup and from the network: keep the larger
+    // size, and fill in the byte size and bitrate that only one of them knows.
+    if (candidate.width * candidate.height > known.width * known.height) {
+      known.width = candidate.width;
+      known.height = candidate.height;
+    }
+    for (const field of ["bytes", "bitrate"]) {
+      if (candidate[field] && !known[field]) known[field] = candidate[field];
+    }
+  };
+  for (const frame of frames) {
+    for (const item of frame.result || []) merge(item);
   }
+  // Files the page loaded that are not in the markup: video and stream requests seen on
+  // the network, and media a site's own API returned.
+  const captured = await chrome.storage.session.get([NET_PREFIX + tabId, MEDIA_PREFIX + tabId]);
+  for (const list of Object.values(captured)) {
+    for (const item of /** @type {object[]} */ (list)) merge(item);
+  }
+  const weight = (item) => (item.bytes || 0) + (item.bitrate || 0);
   const items = [...merged.values()]
-    .sort((a, b) => b.width * b.height - a.width * a.height)
+    .sort((a, b) => b.width * b.height - a.width * a.height || weight(b) - weight(a))
     .slice(0, MAX_SCAN_ITEMS);
 
   // Old scans are dropped here, so session storage does not fill up over a long session.
@@ -402,6 +433,58 @@ async function scanPage(tabId) {
   await chrome.tabs.create({ url: chrome.runtime.getURL("html/gallery.html?k=" + key), openerTabId: tabId });
   return { key, count: items.length };
 }
+
+// ---- network capture: video and stream files the page loads ------------------
+
+// The worker can be stopped at any time, so captured items are kept in session storage.
+// Writes to one list are chained, because each one reads the list and writes it back.
+const mediaWrites = new Map(); // storage key -> promise of the last write
+const seenMedia = new Set(); // "tabId url", so a video's many range requests write once
+
+function rememberMedia(prefix, tabId, items) {
+  const key = prefix + tabId;
+  const next = (mediaWrites.get(key) || Promise.resolve()).then(async () => {
+    const current = /** @type {{ url: string }[]} */ ((await chrome.storage.session.get(key))[key] || []);
+    const byUrl = new Map(current.map((item) => [item.url, item]));
+    for (const item of items) byUrl.set(item.url, { ...byUrl.get(item.url), ...item });
+    await chrome.storage.session.set({ [key]: [...byUrl.values()].slice(-MAX_CAPTURED) });
+  }).catch(() => {});
+  mediaWrites.set(key, next);
+  return next;
+}
+
+// Observe only: nothing is blocked or changed. The first filter covers <video> and
+// <audio> loads. The second covers players that fetch playlists and files themselves
+// (HLS/DASH), and is limited by URL so that ordinary requests do not wake the worker.
+function captureResponse(details) {
+  if (details.tabId < 0) return;
+  const header = (name) => {
+    const found = (details.responseHeaders || []).find((entry) => entry.name.toLowerCase() === name);
+    return (found && found.value) || "";
+  };
+  const type = header("content-type").toLowerCase();
+  let kind = null;
+  if (/mpegurl|dash\+xml/.test(type) || /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(details.url)) kind = "stream";
+  else if (type.startsWith("video/") || /\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i.test(details.url)) kind = "video";
+  if (!kind) return;
+  const seen = details.tabId + " " + details.url;
+  if (seenMedia.has(seen)) return;
+  seenMedia.add(seen);
+  // A range request answers "bytes a-b/total"; the total is the size of the file.
+  const range = header("content-range").match(/\/(\d+)$/);
+  const bytes = range ? Number(range[1]) : Number(header("content-length")) || 0;
+  rememberMedia(NET_PREFIX, details.tabId, [{ url: details.url, kind, source: "network", bytes, width: 0, height: 0 }]);
+}
+
+chrome.webRequest.onResponseStarted.addListener(captureResponse, { urls: ["<all_urls>"], types: ["media"] }, ["responseHeaders"]);
+chrome.webRequest.onResponseStarted.addListener(captureResponse, {
+  urls: ["*://*/*.m3u8*", "*://*/*.mpd*", "*://*/*.mp4*", "*://*/*.webm*"],
+  types: ["xmlhttprequest", "other"],
+}, ["responseHeaders"]);
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.remove([NET_PREFIX + tabId, MEDIA_PREFIX + tabId]).catch(() => {});
+});
 
 // ---- cookies, storage, libraries, history ----------------------------------
 
@@ -462,6 +545,25 @@ const handlers = {
   async newtab(message, sender) {
     await openImageTab(message.data.imu, message.data.background, sender.tab && sender.tab.id);
     return { type: "newtab" };
+  },
+
+  // From js/media-relay.js: media that a site's own API returned (original photos, every
+  // video variant). Only http(s) URLs are kept, and the fields are normalised.
+  async media_found(message, sender) {
+    if (sender.tab && Array.isArray(message.data)) {
+      const items = message.data
+        .filter((item) => item && typeof item.url === "string" && /^https?:/i.test(item.url))
+        .map((item) => ({
+          url: item.url,
+          kind: ["image", "video", "stream"].includes(item.kind) ? item.kind : "video",
+          source: String(item.source || "site").slice(0, 30),
+          width: Number(item.width) || 0,
+          height: Number(item.height) || 0,
+          bitrate: Number(item.bitrate) || 0,
+        }));
+      await rememberMedia(MEDIA_PREFIX, sender.tab.id, items);
+    }
+    return { type: "media_found" };
   },
 
   // Sent by the toolbar popup. Without a tabId the active tab of the current window is used.

@@ -9,13 +9,13 @@ const empty = document.getElementById("empty");
 const minSelect = /** @type {HTMLSelectElement} */ (document.getElementById("min"));
 const scanKey = new URLSearchParams(location.search).get("k");
 
-/** @type {{ item: { url: string, source: string, width: number, height: number }, card: HTMLElement, img: HTMLImageElement, failed: boolean, loaded: boolean, dim: HTMLElement }[]} */
+/** @type {{ item: { url: string, kind?: string, source: string, width: number, height: number, bytes?: number, bitrate?: number }, card: HTMLElement, img: HTMLImageElement, failed: boolean, loaded: boolean, dim: HTMLElement, measured?: { width: number, height: number } }[]} */
 const entries = [];
 let pageUrl = "";
 let renderQueued = false;
 
 function sizeOf(entry) {
-  if (entry.loaded) return { width: entry.img.naturalWidth, height: entry.img.naturalHeight };
+  if (entry.loaded && entry.measured) return entry.measured;
   return { width: entry.item.width, height: entry.item.height };
 }
 
@@ -49,6 +49,29 @@ function queueRender() {
   }
 }
 
+// Reads a master playlist and shows the best variant it lists. The gallery is an
+// extension page with host permissions, so it can fetch the playlist cross-origin.
+function describeStream(url, label) {
+  fetch(url, { credentials: "omit" }).then((response) => response.text()).then((text) => {
+    /** @type {{ bandwidth: number, resolution: string } | null} */
+    let best = null;
+    // A plain for loop: TypeScript loses track of `best` when it is set inside a callback.
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.startsWith("#EXT-X-STREAM-INF:")) continue;
+      const bandwidth = Number((line.match(/BANDWIDTH=(\d+)/) || [])[1]) || 0;
+      const resolution = (line.match(/RESOLUTION=(\d+x\d+)/) || [])[1] || "";
+      if (!best || bandwidth > best.bandwidth) best = { bandwidth, resolution };
+    }
+    if (best) {
+      label.textContent = "best variant: " + (best.resolution || "?") + " · " + Math.round(best.bandwidth / 1000) + " kbps";
+    } else {
+      label.textContent = "playlist (single quality)";
+    }
+  }).catch(() => {
+    label.textContent = "playlist (could not read)";
+  });
+}
+
 function makeCard(item) {
   const card = document.createElement("figure");
   card.className = "card";
@@ -59,20 +82,40 @@ function makeCard(item) {
   thumb.href = item.url;
   thumb.target = "_blank";
   thumb.rel = "noreferrer";
-  const img = document.createElement("img");
-  img.alt = "";
-  // Many sites refuse a request whose Referer is another site; none is sent.
-  img.referrerPolicy = "no-referrer";
-  img.src = item.url;
-  thumb.appendChild(img);
+  const kind = item.kind || "image";
+  // img for pictures, video for files the browser can play, and a plain label for
+  // HLS/DASH playlists, which a browser cannot play from a link.
+  const img = /** @type {HTMLImageElement} */ (document.createElement(kind === "video" ? "video" : "img"));
+  if (kind === "stream") {
+    const label = document.createElement("span");
+    label.className = "stream";
+    label.textContent = "Stream playlist";
+    thumb.appendChild(label);
+  } else {
+    // Many sites refuse a request whose Referer is another site; none is sent.
+    img.referrerPolicy = "no-referrer";
+    if (kind === "video") {
+      const player = /** @type {HTMLVideoElement} */ (/** @type {unknown} */ (img));
+      player.controls = true;
+      player.muted = true;
+      player.preload = "metadata";
+    } else {
+      img.alt = "";
+    }
+    img.src = item.url;
+    thumb.appendChild(img);
+  }
 
   const caption = document.createElement("figcaption");
   const dim = document.createElement("span");
   dim.className = "dim";
   dim.textContent = item.width && item.height ? item.width + " × " + item.height + " (declared)" : "size unknown";
+  const extra = [];
+  if (item.bytes) extra.push((item.bytes / 1048576).toFixed(1) + " MB");
+  if (item.bitrate) extra.push(Math.round(item.bitrate / 1000) + " kbps");
   const meta = document.createElement("span");
   meta.className = "meta";
-  meta.textContent = item.source + " · " + item.url;
+  meta.textContent = [kind, item.source, ...extra].join(" · ") + " · " + item.url;
   const actions = document.createElement("div");
   actions.className = "actions";
 
@@ -103,9 +146,19 @@ function makeCard(item) {
   card.append(thumb, caption);
 
   const entry = { item, card, img, failed: false, loaded: false, dim };
-  img.addEventListener("load", () => {
+  if (kind === "stream") {
+    // Nothing to load: a playlist is shown as text. Its best variant is looked up below.
+    entry.loaded = false;
+    describeStream(item.url, dim);
+    return entry;
+  }
+  img.addEventListener(kind === "video" ? "loadedmetadata" : "load", () => {
     entry.loaded = true;
-    dim.textContent = img.naturalWidth + " × " + img.naturalHeight;
+    const player = /** @type {HTMLVideoElement} */ (/** @type {unknown} */ (img));
+    const width = kind === "video" ? player.videoWidth : img.naturalWidth;
+    const height = kind === "video" ? player.videoHeight : img.naturalHeight;
+    dim.textContent = width + " × " + height;
+    entry.measured = { width, height };
     queueRender();
   });
   img.addEventListener("error", () => {
