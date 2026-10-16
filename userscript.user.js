@@ -136,8 +136,8 @@ var $$IMU_EXPORT$$;
 			// MV3 fork: the extension was renamed to "XXL.pics.FIND", so the name check had to
 			// accept it. Without this the script ran as a plain userscript: no extension
 			// messages, so the right-click action and the request proxy did nothing.
-			// Original line: is_extension = extension_manifest.name === "Larger image finder";
-			is_extension = extension_manifest.name === "XXL.pics.FIND" || extension_manifest.name === "Larger image finder";
+			// Upstream compared the manifest name with the name of the extension it shipped in.
+			is_extension = extension_manifest.name === "XXL.pics.FIND";
 
 			if (!is_extension)
 				return;

@@ -27,8 +27,8 @@ lazy-load attribute, a link, a resizing URL, or inside a web component. **XXL.pi
 finds the biggest file for you, tells you its real pixel size **before** you download it,
 and saves it in one click.
 
-It is a Manifest V3 port of the unmaintained MV2 extension *Larger image finder* 0.8.0,
-powered by the site rules of [maxurl](https://github.com/qsniyg/maxurl) (thousands of sites).
+It is a Manifest V3 extension powered by the site rules of
+[maxurl](https://github.com/qsniyg/maxurl) (thousands of sites).
 
 ## 🔥 Why you'll love it
 
@@ -165,8 +165,8 @@ The context menu itself cannot be clicked from a script; the message it sends is
 самый большой файл, показывает его реальный размер в пикселях **до** скачивания и сохраняет
 одним кликом.
 
-Это порт на Manifest V3 заброшенного расширения MV2 *Larger image finder* 0.8.0. Правила для
-тысяч сайтов берутся из [maxurl](https://github.com/qsniyg/maxurl).
+Это расширение на Manifest V3. Правила для тысяч сайтов берутся из
+[maxurl](https://github.com/qsniyg/maxurl).
 
 ## 🔥 Почему это удобно
 

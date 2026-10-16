@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-The extension's display name is "XXL.pics.FIND" (set in `_locales/*/messages.json`, key `name`, and in the popup and viewer page titles). The folder name and the original project name are unchanged. It is a Chrome Manifest V3 port of "Larger image finder" 0.8.0, which was MV2 and is no longer maintained. The original lives in the sibling folder `Larger_image_finder/` and is not modified here.
+The extension's display name is "XXL.pics.FIND" (set in `_locales/*/messages.json`, key `name`, and in the popup and viewer page titles). The folder name and the original project name are unchanged. It is a Chrome Manifest V3 extension. An older Manifest V2 build lives in a sibling folder and is not modified here.
 
 ## Commands
 
