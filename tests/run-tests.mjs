@@ -665,7 +665,7 @@ async function main() {
     hoverPage.cdp.close();
     await closeTarget(hoverPage.target.id);
 
-    // ---- right-click "Try to find larger image" ------------------------------
+    // ---- right-click "XXL Find This HiRes" ------------------------------
 
     // The extension name is checked by the userscript to decide if it runs as an extension
     // (renaming it once broke this action), so this test runs the whole path: the mouse
@@ -685,7 +685,7 @@ async function main() {
       await sleep(200);
       popupWidth = await ctxPage.cdp.eval(`(() => { const big = [...document.images].find((i) => i.id !== "pic" && i.naturalWidth === 1200); return big ? big.naturalWidth : 0; })()`);
     }
-    check("right-click \"Try to find larger image\" opens a popup with the larger file", popupWidth === 1200, "popup image width " + popupWidth);
+    check("right-click \"XXL Find This HiRes\" opens a popup with the larger file", popupWidth === 1200, "popup image width " + popupWidth);
     ctxPage.cdp.close();
     await closeTarget(ctxPage.target.id);
 

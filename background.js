@@ -13,7 +13,7 @@
 //   request / abort_request   cross-origin fetch proxy; results are pushed to the frame
 //   download, newtab          chrome.downloads / chrome.tabs, keeping the image's headers
 //   getcookies, getvalue, setvalue, get_lib, add_to_history, override_next_headers
-//   context menu              "Try to find larger image" sends {type: "context_imu"}
+//   context menu              "XXL Find This HiRes" sends {type: "context_imu"}
 //
 // Custom request headers (Referer, Origin, ...) cannot be set on fetch() from an
 // extension, so they go through temporary declarativeNetRequest session rules.
@@ -51,16 +51,21 @@ chrome.runtime.onInstalled.addListener(async () => {
 function setContextMenu(enabled) {
   chrome.contextMenus.removeAll(() => {
     if (enabled) {
+      // Chrome folds an extension's top-level items into one submenu as soon as there are
+      // two of them shown together. Two flat lines are only possible if they never appear
+      // at the same time, so the contexts are split: over a picture, video or link only
+      // "Find This"; anywhere else on the page only "Find All". "Find All" over a picture
+      // stays reachable with the keyboard shortcut (see chrome.commands below) and the
+      // popup button.
       chrome.contextMenus.create({
         id: MENU_ID,
-        title: "Try to find larger image",
-        contexts: ["page", "link", "image", "video", "audio"],
+        title: "XXL Find This HiRes",
+        contexts: ["link", "image", "video", "audio"],
       });
-      // Works anywhere on the page, not only over an image.
       chrome.contextMenus.create({
         id: SCAN_MENU_ID,
-        title: "Find largest images on this page",
-        contexts: ["page", "link", "image", "video", "audio"],
+        title: "XXL Find All HiRes",
+        contexts: ["page", "frame", "selection", "editable"],
       });
     }
   });
@@ -73,6 +78,15 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   } else if (info.menuItemId === SCAN_MENU_ID) {
     scanPage(tab.id).catch(() => {}); // pages Chrome does not allow scripts on do nothing
   }
+});
+
+// Keyboard shortcut for "XXL Find All HiRes", for when the pointer is over a picture and
+// the right-click menu offers only "Find This". The key can be changed on
+// chrome://extensions/shortcuts.
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "find-all") return;
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (tab && tab.id !== undefined) scanPage(tab.id).catch(() => {});
 });
 
 // ---- session rules for request headers --------------------------------------
