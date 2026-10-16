@@ -183,6 +183,23 @@ function startSite() {
       return res.end(`<!doctype html><title>ctx</title><body style="margin:0">
 <img id="pic" src="/thumb/a/ab/pic.png/300px-pic.png" width="300" height="200" style="display:block;margin:40px">`);
     }
+    // A web component keeps its <img> in an open shadow root (Rotten Tomatoes' <rt-img>
+    // does), where document.images and document.elementsFromPoint do not look. The
+    // picture is the MediaWiki-style thumbnail, so the rules can name the 1200 px file.
+    if (pathname === "/shadow-page") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><title>shadow</title><body style="margin:0">
+<script>
+class FakeImg extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({ mode: "open" });
+    root.innerHTML = '<img src="' + this.getAttribute("src") + '" width="300" height="200" style="display:block">';
+  }
+}
+customElements.define("fake-img", FakeImg);
+</script>
+<fake-img id="host" src="/thumb/a/ab/pic.png/300px-pic.png" style="display:block;margin:40px;width:300px;height:200px"></fake-img>`);
+    }
     // Not decodable on purpose: the tests only need the request and its headers.
     if (pathname === "/clip.mp4") {
       res.writeHead(200, { "content-type": "video/mp4", "content-length": "2000" });
@@ -671,6 +688,50 @@ async function main() {
     check("right-click \"Try to find larger image\" opens a popup with the larger file", popupWidth === 1200, "popup image width " + popupWidth);
     ctxPage.cdp.close();
     await closeTarget(ctxPage.target.id);
+
+    // ---- pictures inside shadow DOM ------------------------------------------
+
+    const shadowPage = await openTarget(`${base}/shadow-page`);
+    await sleep(3500);
+    const shadowTab = await popup.cdp.eval(`new Promise((r) => chrome.tabs.query({ url: ${JSON.stringify(base + "/shadow-page")} }, (tabs) => r(tabs.length ? tabs[0].id : -1)))`);
+    const shadowScan = await send({ type: "scan_page", data: { tabId: shadowTab } });
+    const shadowStored = await popup.cdp.eval(`new Promise((r) => chrome.storage.session.get(${JSON.stringify("scan:" + shadowScan.data?.key)}, r))`);
+    const shadowItems = shadowStored[`scan:${shadowScan.data?.key}`]?.items ?? [];
+    check("scan finds a picture inside a shadow root", shadowItems.some((item) => item.url.endsWith("/thumb/a/ab/pic.png/300px-pic.png")), shadowItems.map((item) => item.url).join(" "));
+    const upgraded = shadowItems.find((item) => item.url.endsWith("/a/ab/pic.png"));
+    check("scan adds the original named by the site rules, marked with its thumbnail", upgraded?.source === "rule" && String(upgraded.from).includes("/thumb/a/ab/pic.png/"), JSON.stringify(upgraded));
+
+    // The gallery measures both files and shows only the original: it replaces the thumbnail.
+    let shadowGallery = null;
+    for (let i = 0; i < 50 && !shadowGallery; i++) {
+      shadowGallery = (await getJson("/json/list")).find((t) => t.url.includes("gallery.html")) || null;
+      if (!shadowGallery) await sleep(100);
+    }
+    let shadowCards = [];
+    if (shadowGallery) {
+      const gallery = openCdp(shadowGallery.webSocketDebuggerUrl);
+      await gallery.ready;
+      for (let i = 0; i < 60 && shadowCards.length < 1; i++) {
+        await sleep(150);
+        shadowCards = await gallery.eval(`[...document.querySelectorAll(".card")].map((c) => c.dataset.url)`);
+      }
+      await sleep(1500); // the thumbnail may still be listed until the original is measured
+      shadowCards = await gallery.eval(`[...document.querySelectorAll(".card")].map((c) => c.dataset.url)`);
+      gallery.close();
+      await closeTarget(shadowGallery.id);
+    }
+    check("gallery shows the original instead of its thumbnail", shadowCards.length === 1 && shadowCards[0].endsWith("/a/ab/pic.png"), shadowCards.join(" "));
+
+    const shadowCentre = await shadowPage.cdp.eval(`(() => { const r = document.getElementById("host").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    let shadowButton = null;
+    for (let i = 0; i < 40 && !shadowButton; i++) {
+      await shadowPage.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: shadowCentre.x + (i % 3), y: shadowCentre.y });
+      await sleep(200);
+      shadowButton = await shadowPage.cdp.eval(`(() => { for (const d of document.querySelectorAll("div")) { if (d.shadowRoot) { const b = d.shadowRoot.querySelector("button"); if (b && !b.hidden) return b.textContent; } } return null; })()`);
+    }
+    check("hovering a picture inside a shadow root shows the button with the original's size", /1200.800/.test(shadowButton || ""), shadowButton || "no button");
+    shadowPage.cdp.close();
+    await closeTarget(shadowPage.target.id);
 
     browser.close();
   } finally {

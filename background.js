@@ -317,11 +317,13 @@ async function openImageTab(imu, background, openerTabId) {
 // Runs inside the page: chrome.scripting.executeScript serialises this function, so it
 // must not use anything else from this file. It returns every image URL the page
 // offers, with the best size the markup gives. The gallery page measures real sizes.
-function collectImages() {
-  const found = new Map(); // absolute URL -> { url, source, width, height }
+// It is async: it waits for the site rules of the content script (maxurl) to name the
+// original file behind a thumbnail URL.
+async function collectImages() {
+  const found = new Map(); // absolute URL -> { url, source, width, height, from? }
   const IMAGE_FILE = /\.(?:jpe?g|png|gif|webp|avif|bmp|svg|tiff?)(?:[?#]|$)/i;
 
-  function add(raw, source, width = 0, height = 0, kind = "image") {
+  function add(raw, source, width = 0, height = 0, kind = "image", from = "") {
     if (!raw) return;
     let url;
     try {
@@ -332,7 +334,9 @@ function collectImages() {
     if (!/^https?:/i.test(url)) return;
     const known = found.get(url);
     if (!known || width * height > known.width * known.height) {
-      found.set(url, { url, kind, source: known ? known.source : source, width, height });
+      const item = { url, kind, source: known ? known.source : source, width, height };
+      if (from) item.from = from;
+      found.set(url, item);
     }
   }
 
@@ -345,10 +349,22 @@ function collectImages() {
     }
   }
 
-  for (const img of document.images) {
-    add(img.currentSrc || img.src, "img", img.naturalWidth, img.naturalHeight);
-    // Lazy-loading sites keep the real URL in data-* attributes of every kind.
-    for (const attr of img.attributes) {
+  // Every open shadow root on the page. Sites built from web components (Rotten
+  // Tomatoes' <rt-img>, for one) keep their <img> elements inside them, where
+  // document.querySelectorAll and document.images do not look. Closed roots cannot be
+  // reached from a script and are skipped.
+  /** @type {(Document | ShadowRoot)[]} */
+  const roots = [document];
+  for (let i = 0; i < roots.length && roots.length < 3000; i++) {
+    for (const element of roots[i].querySelectorAll("*")) {
+      if (element.shadowRoot) roots.push(element.shadowRoot);
+    }
+  }
+  const queryAll = (selector) => roots.flatMap((root) => [...root.querySelectorAll(selector)]);
+
+  // Lazy-loading sites keep the real URL in data-* attributes of every kind.
+  function addAttributes(element) {
+    for (const attr of element.attributes) {
       if (attr.value.length > 2000) continue;
       if (/srcset/i.test(attr.name)) {
         addSrcset(attr.value, "srcset");
@@ -358,20 +374,29 @@ function collectImages() {
       }
     }
   }
-  for (const source of document.querySelectorAll("source[srcset], source[data-srcset]")) {
+
+  for (const img of queryAll("img")) {
+    add(img.currentSrc || img.src, "img", img.naturalWidth, img.naturalHeight);
+    addAttributes(img);
+  }
+  // The host element of a shadow root often carries the URL itself (<rt-img src=...>).
+  for (const root of roots) {
+    if (root instanceof ShadowRoot) addAttributes(root.host);
+  }
+  for (const source of queryAll("source[srcset], source[data-srcset]")) {
     addSrcset(source.getAttribute("srcset") || source.getAttribute("data-srcset") || "", "srcset");
   }
   // Links that go straight to an image file are usually the full-size original.
-  for (const link of /** @type {NodeListOf<HTMLAnchorElement>} */ (document.querySelectorAll("a[href]"))) {
+  for (const link of /** @type {HTMLAnchorElement[]} */ (queryAll("a[href]"))) {
     if (IMAGE_FILE.test(link.href)) add(link.href, "link");
   }
   for (const meta of document.querySelectorAll("meta[property^='og:image'], meta[name^='twitter:image'], link[rel='image_src']")) {
     add(meta.getAttribute("content") || meta.getAttribute("href"), "meta");
   }
-  for (const video of document.querySelectorAll("video[poster]")) add(video.getAttribute("poster"), "poster");
+  for (const video of queryAll("video[poster]")) add(video.getAttribute("poster"), "poster");
   // Video files. blob: sources (MSE players) are skipped: they only exist inside the page,
   // and the network capture below finds the real files behind them.
-  for (const video of document.querySelectorAll("video")) {
+  for (const video of /** @type {HTMLVideoElement[]} */ (queryAll("video"))) {
     const sources = [video.currentSrc, video.getAttribute("src")];
     for (const child of video.querySelectorAll("source[src]")) sources.push(child.getAttribute("src"));
     for (const src of sources) add(src, "video", video.videoWidth, video.videoHeight, "video");
@@ -384,6 +409,41 @@ function collectImages() {
     const background = getComputedStyle(element).backgroundImage;
     if (!background || background === "none") continue;
     for (const match of background.matchAll(/url\((["']?)(.*?)\1\)/g)) add(match[2], "background");
+  }
+
+  // Thumbnail URLs often hide the original: /thumb/a/ab/pic.png/300px-pic.png, or a
+  // resizing service that carries the real address inside its own. The site rules of
+  // maxurl (the content script, same isolated world, so its global is visible here) know
+  // many of these. Each answer is added as its own item with the thumbnail in `from`; the
+  // gallery drops the thumbnail once the original has been measured. Capped in count and
+  // time, because a rule can be slow and a page can have hundreds of images.
+  const imu = /** @type {any} */ (globalThis).$$IMU_EXPORT$$;
+  if (typeof imu === "function") {
+    const todo = [...found.values()].filter((item) => item.kind === "image" && item.source !== "link").slice(0, 80);
+    const deadline = Date.now() + 6000;
+    let next = 0;
+    const upgrade = (item) => new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1500);
+      try {
+        imu(item.url, {
+          fill_object: true,
+          cb: (results) => {
+            clearTimeout(timer);
+            for (const result of results || []) {
+              if (result && result.url && result.url !== item.url && !result.is_original) add(result.url, "rule", 0, 0, "image", item.url);
+            }
+            resolve(undefined);
+          },
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        resolve(undefined);
+      }
+    });
+    const worker = async () => {
+      while (next < todo.length && Date.now() < deadline) await upgrade(todo[next++]);
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
   }
   return [...found.values()];
 }

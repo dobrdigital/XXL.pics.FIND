@@ -122,6 +122,17 @@
 
   // Every URL a picture could be downloaded from. The worker measures them and keeps
   // the largest, so this does not have to guess which one is the original.
+  // Like element.closest, but also climbs out of shadow roots into their host.
+  function closestComposed(element, selector) {
+    let node = element;
+    while (node) {
+      if (node.matches && node.matches(selector)) return node;
+      const root = node.getRootNode();
+      node = node.parentElement || (root instanceof ShadowRoot ? root.host : null);
+    }
+    return null;
+  }
+
   function imageCandidates(img) {
     const urls = new Set();
     const add = (raw) => {
@@ -134,16 +145,25 @@
     };
     add(img.currentSrc);
     add(img.src);
-    for (const attr of img.attributes) {
-      if (attr.value.length > 2000) continue;
-      if (/srcset/i.test(attr.name)) addSrcset(attr.value);
-      else if (/^(?:https?:)?\/\/\S+$|^\/\S+$/.test(attr.value) && (IMAGE_FILE.test(attr.value) || IMAGE_ATTRIBUTE.test(attr.name))) add(attr.value);
+    const addAttributes = (element) => {
+      for (const attr of element.attributes) {
+        if (attr.value.length > 2000) continue;
+        if (/srcset/i.test(attr.name)) addSrcset(attr.value);
+        else if (/^(?:https?:)?\/\/\S+$|^\/\S+$/.test(attr.value) && (IMAGE_FILE.test(attr.value) || IMAGE_ATTRIBUTE.test(attr.name))) add(attr.value);
+      }
+    };
+    addAttributes(img);
+    // A picture inside a web component: the host (<rt-img src=...>) often carries the URL.
+    let root = img.getRootNode();
+    for (let depth = 0; root instanceof ShadowRoot && depth < 4; depth++) {
+      addAttributes(root.host);
+      root = root.host.getRootNode();
     }
-    const picture = img.closest("picture");
+    const picture = closestComposed(img, "picture");
     if (picture) {
       for (const source of picture.querySelectorAll("source[srcset]")) addSrcset(source.getAttribute("srcset") || "");
     }
-    const link = img.closest("a[href]");
+    const link = closestComposed(img, "a[href]");
     if (link && IMAGE_FILE.test(link.getAttribute("href") || "")) add(link.getAttribute("href"));
     return [...urls].slice(0, 12);
   }
@@ -157,6 +177,26 @@
     return [...urls];
   }
 
+  function upgradedByRules(url) {
+    return new Promise((resolve) => {
+      const imu = globalThis.$$IMU_EXPORT$$;
+      if (typeof imu !== "function") return resolve([]);
+      const timer = setTimeout(() => resolve([]), 1500);
+      try {
+        imu(url, {
+          fill_object: true,
+          cb: (results) => {
+            clearTimeout(timer);
+            resolve((results || []).map((result) => result && result.url && absolute(result.url)).filter((found) => found && found !== url));
+          },
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        resolve([]);
+      }
+    });
+  }
+
   async function lookup(media) {
     if (media.tagName === "VIDEO") {
       const [direct] = videoCandidates(media);
@@ -166,6 +206,9 @@
     }
     const urls = imageCandidates(media);
     if (!urls.length) return null;
+    // The site rules of maxurl (the content script, same isolated world) may name the
+    // original behind a thumbnail URL. The worker then measures it with the other files.
+    urls.push(...await upgradedByRules(urls[0]));
     const reply = await send({ type: "best_source", data: { urls } });
     return reply && reply.data;
   }
@@ -185,8 +228,23 @@
 
   // The picture or video under the pointer, even when a transparent link or overlay
   // covers it.
+  // elementsFromPoint stops at a shadow host. This goes into every open shadow root under
+  // the point as well, innermost elements first. A shadow root's own list repeats its host
+  // and the host's ancestors, so elements already seen are skipped (without that the host
+  // would be entered again and again).
+  function elementsDeep(root, x, y, seen = new Set()) {
+    const result = [];
+    for (const element of root.elementsFromPoint(x, y)) {
+      if (seen.has(element)) continue;
+      seen.add(element);
+      if (element.shadowRoot) result.push(...elementsDeep(element.shadowRoot, x, y, seen));
+      result.push(element);
+    }
+    return result;
+  }
+
   function mediaAt(x, y) {
-    for (const element of document.elementsFromPoint(x, y)) {
+    for (const element of elementsDeep(document, x, y)) {
       if (element === host) continue;
       if (element.tagName !== "IMG" && element.tagName !== "VIDEO") continue;
       const rect = element.getBoundingClientRect();

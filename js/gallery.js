@@ -18,13 +18,16 @@ const more = /** @type {HTMLButtonElement} */ (document.getElementById("more"));
 const minSelect = /** @type {HTMLSelectElement} */ (document.getElementById("min"));
 const scanKey = new URLSearchParams(location.search).get("k");
 
-/** @typedef {{ url: string, kind?: string, source: string, width: number, height: number, bytes?: number, bitrate?: number }} Item */
+/** @typedef {{ url: string, kind?: string, source: string, width: number, height: number, bytes?: number, bitrate?: number, from?: string }} Item */
 /** @type {Item[]} */
 let items = [];
 /** @type {Item[]} items that have no card yet */
 let pending = [];
 let shown = 0;
 let pageUrl = "";
+// Thumbnail URLs whose original (an item with `from` set) was found and measured. The
+// thumbnail is then left out of the list, because the original replaces it.
+const replaced = new Set();
 
 // Video and stream files usually have no size in the list. They are ranked as if they
 // were full HD so they appear on the first pages instead of at the very end.
@@ -44,6 +47,7 @@ function bySize(a, b) {
 // An image is hidden by the size filter only when its size is known and too small.
 function passesFilter(item) {
   const min = Number(minSelect.value);
+  if (replaced.has(item.url)) return false;
   return !(item.width > 0 && item.height > 0 && Math.min(item.width, item.height) < min);
 }
 
@@ -59,6 +63,7 @@ async function measureAll() {
         item.width = size.width;
         item.height = size.height;
         if (size.bytes) item.bytes = size.bytes;
+        if (item.from) replaced.add(item.from);
       }
     }
   }
