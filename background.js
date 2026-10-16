@@ -19,13 +19,16 @@
 // extension, so they go through temporary declarativeNetRequest session rules.
 
 const MENU_ID = "imu-find-larger";
-const MAX_SESSION_RULES = 4000; // Chrome allows 5000 session rules in total
-const RULE_TTL_MS = 60_000;
+const RULE_TTL_MS = 60_000; // also the life of a pending viewer entry
+const RULE_ALARM_PREFIX = "imu-rule-";
+const VIEW_PREFIX = "view:";
 const inflight = new Map(); // reqid -> { controller, target, ruleId }
-const usedRuleIds = new Set();
-let ruleCursor = 0;
 
+// Requests the worker makes itself (the proxy).
 const XHR_TYPES = ["xmlhttprequest", "other"];
+// Requests the page makes after override_next_headers: <img> is "image", <video> and
+// <audio> are "media". Without these types the headers would never reach the image.
+const PAGE_TYPES = ["image", "media", "xmlhttprequest", "other"];
 
 // ---- install and context menu ----------------------------------------------
 
@@ -55,26 +58,48 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 // ---- session rules for request headers --------------------------------------
 
-// Drop rules left behind if the worker was terminated mid-request.
-chrome.declarativeNetRequest.getSessionRules()
-  .then((rules) => chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: rules.map((rule) => rule.id),
-  }))
-  .catch(() => {});
-
-function allocRuleId() {
-  for (let i = 0; i < MAX_SESSION_RULES; i++) {
-    ruleCursor = (ruleCursor % MAX_SESSION_RULES) + 1;
-    if (!usedRuleIds.has(ruleCursor)) {
-      usedRuleIds.add(ruleCursor);
-      return ruleCursor;
-    }
+// A rule is removed when its request settles. An alarm removes it after RULE_TTL_MS
+// as a backstop: the worker can be stopped mid-request, and a setTimeout would die
+// with it, while alarms survive a worker restart. Session rules are also cleared by
+// Chrome when the browser closes. Rule ids are random, so nothing has to be kept in
+// memory and a restarted worker cannot reuse an id that is still in use.
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name.startsWith(RULE_ALARM_PREFIX)) {
+    chrome.declarativeNetRequest
+      .updateSessionRules({ removeRuleIds: [Number(alarm.name.slice(RULE_ALARM_PREFIX.length))] })
+      .catch(() => {});
   }
-  return null;
+});
+
+function newRuleId() {
+  return (crypto.getRandomValues(new Uint32Array(1))[0] % 0x7fffffff) + 1;
 }
 
 function escapeRegex(text) {
   return text.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");
+}
+
+// Only web URLs go through the proxy and the header rules. Without this the proxy
+// could be asked to read chrome-extension:// or other internal URLs.
+function webUrl(url) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("only http(s) URLs are supported");
+  }
+  return parsed;
+}
+
+// Matches exactly one URL. urlFilter has no size limit and no regex-rule quota
+// (Chrome allows 1000 regex rules); regexFilter is the fallback for URLs that contain
+// urlFilter's own wildcard characters. Rules must be ASCII, so the URL is normalised
+// first (this percent-encodes non-ASCII characters). A #fragment is kept: Chrome
+// matches rules against the URL with the fragment (tested), so dropping it would
+// make the rule miss.
+function urlCondition(url) {
+  const href = webUrl(url).href;
+  return /[*^|]/.test(href)
+    ? { regexFilter: "^" + escapeRegex(href) + "$" }
+    : { urlFilter: "|" + href + "|" };
 }
 
 // Returns the rule id, or null when there is nothing to change.
@@ -87,32 +112,23 @@ async function addHeaderRule(url, headers, condition) {
       : { header: name, operation: "set", value: String(value) });
   if (requestHeaders.length === 0) return null;
 
-  const id = allocRuleId();
-  if (id === null) throw new Error("too many session rules in use");
-  try {
-    await chrome.declarativeNetRequest.updateSessionRules({
-      addRules: [{
-        id,
-        priority: 1,
-        action: { type: "modifyHeaders", requestHeaders },
-        condition: { regexFilter: "^" + escapeRegex(url) + "$", ...condition },
-      }],
-    });
-  } catch (error) {
-    usedRuleIds.delete(id);
-    throw error;
-  }
+  const id = newRuleId();
+  await chrome.declarativeNetRequest.updateSessionRules({
+    addRules: [{
+      id,
+      priority: 1,
+      action: { type: "modifyHeaders", requestHeaders },
+      condition: { ...urlCondition(url), ...condition },
+    }],
+  });
+  chrome.alarms.create(RULE_ALARM_PREFIX + id, { when: Date.now() + RULE_TTL_MS });
   return id;
 }
 
 async function releaseHeaderRule(ruleId) {
   if (ruleId === null || ruleId === undefined) return;
-  usedRuleIds.delete(ruleId);
+  chrome.alarms.clear(RULE_ALARM_PREFIX + ruleId);
   await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [ruleId] }).catch(() => {});
-}
-
-function releaseAfter(ruleId, ms) {
-  if (ruleId !== null) setTimeout(() => releaseHeaderRule(ruleId), ms);
 }
 
 // ---- cross-origin request proxy ---------------------------------------------
@@ -156,7 +172,14 @@ async function runRequest(reqid, request) {
     : null;
 
   try {
-    entry.ruleId = await addHeaderRule(url, request.headers, { resourceTypes: XHR_TYPES });
+    webUrl(url); // throws for anything but http(s); reported as onerror below
+    // tabIds [TAB_ID_NONE] limits the rule to requests that do not come from a tab, which
+    // is how a service worker's fetch() is seen, so a page's own request to the same URL
+    // is never changed by this rule.
+    entry.ruleId = await addHeaderRule(url, request.headers, {
+      resourceTypes: XHR_TYPES,
+      tabIds: [chrome.tabs.TAB_ID_NONE],
+    });
 
     const init = {
       method,
@@ -215,9 +238,7 @@ async function downloadImage(imu, saveAs) {
   // Images that need headers are fetched by the viewer page through the proxy and
   // saved from a blob URL there (chrome.downloads only accepts a few request headers).
   if (Object.keys(imu.headers || {}).length > 0) {
-    const key = crypto.randomUUID();
-    pendingViews.set(key, { url: imu.url, headers: imu.headers, mode: "download", saveAs });
-    setTimeout(() => pendingViews.delete(key), RULE_TTL_MS);
+    const key = await stashView({ url: imu.url, headers: imu.headers, mode: "download", saveAs });
     await chrome.tabs.create({ url: chrome.runtime.getURL("html/viewer.html?k=" + key), active: false });
     return;
   }
@@ -234,7 +255,23 @@ async function downloadImage(imu, saveAs) {
 // Chrome does not apply DNR header rules to top-level navigations (tested), so an
 // image that needs headers opens in html/viewer.html, which fetches it through the
 // proxy. The headers wait here under a one-time key until the viewer asks for them.
-const pendingViews = new Map(); // key -> { url, headers }
+// They are kept in chrome.storage.session (memory only, cleared when the browser
+// closes) and not in a Map, because the worker can be stopped between this message
+// and the viewer's request, which would lose a Map.
+async function stashView(view) {
+  const key = crypto.randomUUID();
+  await chrome.storage.session.set({ [VIEW_PREFIX + key]: { ...view, expires: Date.now() + RULE_TTL_MS } });
+  return key;
+}
+
+// Reads and removes the entry. Returns null when it is missing or expired.
+async function takeView(key) {
+  const name = VIEW_PREFIX + key;
+  const stored = await chrome.storage.session.get(name);
+  await chrome.storage.session.remove(name);
+  const { expires, ...view } = stored[name] || {};
+  return stored[name] && expires > Date.now() ? view : null;
+}
 
 async function openImageTab(imu, background, openerTabId) {
   const options = { openerTabId };
@@ -243,9 +280,7 @@ async function openImageTab(imu, background, openerTabId) {
   if (Object.keys(imu.headers || {}).length === 0) {
     return chrome.tabs.create({ ...options, url: imu.url });
   }
-  const key = crypto.randomUUID();
-  pendingViews.set(key, { url: imu.url, headers: imu.headers });
-  setTimeout(() => pendingViews.delete(key), RULE_TTL_MS);
+  const key = await stashView({ url: imu.url, headers: imu.headers });
   return chrome.tabs.create({ ...options, url: chrome.runtime.getURL("html/viewer.html?k=" + key) });
 }
 
@@ -330,10 +365,8 @@ const handlers = {
     return { type: "get_lib", data: await getLib(message.data.name) };
   },
 
-  get_view(message) {
-    const view = pendingViews.get(message.data.key) || null;
-    pendingViews.delete(message.data.key);
-    return { type: "get_view", data: view };
+  async get_view(message) {
+    return { type: "get_view", data: await takeView(message.data.key) };
   },
 
   async add_to_history(message) {
@@ -343,9 +376,10 @@ const handlers = {
   },
 
   async override_next_headers(message) {
+    // The rule is for the page's own next load of this URL (img.src, new Image()), not
+    // for the proxy. It is removed by its alarm after RULE_TTL_MS.
     const { url, headers } = message.data;
-    const ruleId = await addHeaderRule(url, headers, { resourceTypes: XHR_TYPES });
-    releaseAfter(ruleId, RULE_TTL_MS);
+    await addHeaderRule(url, headers, { resourceTypes: PAGE_TYPES });
     return { type: "override_next_headers" };
   },
 

@@ -94,6 +94,16 @@ function startSite() {
       res.writeHead(200, { "content-type": "image/png" });
       return res.end(PNG);
     }
+    // Serves the image only for the exact Referer the tests set. A browser's own Referer
+    // for a page on this site would differ, so an ordinary load of this URL gets a 403.
+    if (pathname === "/strict.png") {
+      if (req.headers.referer !== "https://example.org/page") {
+        res.writeHead(403);
+        return res.end("wrong referer");
+      }
+      res.writeHead(200, { "content-type": "image/png" });
+      return res.end(PNG);
+    }
     if (pathname === "/last") {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ referer: lastReferer }));
@@ -266,6 +276,54 @@ async function main() {
     const saved = item && item.state === "complete" ? path.basename(item.filename) : null;
     const size = saved ? statSync(path.join(downloads, saved)).size : 0;
     check("download with headers saves the image", saved === "protected.png" && size === PNG.length, saved ? `${saved}, ${size} bytes` : "no completed download");
+
+    // ---- hardening checks ----------------------------------------------------
+
+    // Page-initiated loads: override_next_headers must cover <img> requests, because the
+    // userscript calls it right before it sets img.src or loads an Image.
+    const imagePage = await openTarget(`${base}/page`);
+    await sleep(800);
+    const loadImage = (url) => imagePage.cdp.eval(`new Promise((resolve) => { const img = new Image(); img.onload = () => resolve(img.naturalWidth); img.onerror = () => resolve(0); img.src = ${JSON.stringify(url)}; })`);
+    const spoofed = { Referer: "https://example.org/page" };
+
+    const plain = await loadImage(`${base}/strict.png?plain=1`);
+    await send({ type: "override_next_headers", data: { url: `${base}/strict.png?override=1`, headers: spoofed, method: "GET" } });
+    const overridden = await loadImage(`${base}/strict.png?override=1`);
+    check("override_next_headers applies to <img> loads", plain === 0 && overridden === 1, `without ${plain}, with ${overridden}`);
+
+    // A rule made for the proxy must not outlive its request or leak into page loads.
+    const viaProxy = await proxied({ url: `${base}/strict.png?proxy=1`, headers: spoofed, responseType: "blob" });
+    const afterProxy = await loadImage(`${base}/strict.png?proxy=1`);
+    check("proxy header rule is gone after the request", viaProxy?.event === "onload" && viaProxy.data.status === 200 && afterProxy === 0, `proxy ${viaProxy?.data?.status}, page ${afterProxy}`);
+    imagePage.cdp.close();
+    await closeTarget(imagePage.target.id);
+
+    // URLs a plain regexFilter rule cannot hold: non-ASCII characters, a #fragment (never
+    // sent to the server) and more than 2 KB.
+    const unicode = await proxied({ url: `${base}/headers?name=${"é".repeat(5)}`, headers: spoofed, responseType: "text" });
+    const unicodeHeaders = unicode?.data?.responseText ? JSON.parse(unicode.data.responseText) : {};
+    check("proxy sets headers on a non-ASCII URL", unicode?.event === "onload" && unicodeHeaders.referer === spoofed.Referer, unicode?.event);
+    const fragment = await proxied({ url: `${base}/headers?name=1#fragment`, headers: spoofed, responseType: "text" });
+    const fragmentHeaders = fragment?.data?.responseText ? JSON.parse(fragment.data.responseText) : {};
+    check("proxy sets headers on a URL with a #fragment", fragment?.event === "onload" && fragmentHeaders.referer === spoofed.Referer, fragment?.event);
+    const longUrl = await proxied({ url: `${base}/headers?q=${"a".repeat(3000)}`, headers: spoofed, responseType: "text" });
+    const longHeaders = longUrl?.data?.responseText ? JSON.parse(longUrl.data.responseText) : {};
+    check("proxy sets headers on a URL longer than 2 KB", longUrl?.event === "onload" && longHeaders.referer === spoofed.Referer, longUrl?.event);
+
+    // The proxy is for web images: it must not read extension or other internal URLs.
+    const internal = await proxied({ url: `chrome-extension://${extId}/manifest.json`, responseType: "text" });
+    check("proxy refuses non-http(s) URLs", internal?.event === "onerror", internal?.event);
+
+    // Pending viewer data lives in chrome.storage.session, so it survives the worker
+    // being stopped, and each key can be read once.
+    const sessionKey = "view:test-key";
+    await popup.cdp.eval(`new Promise((r) => chrome.storage.session.set({ "${sessionKey}": { url: "${base}/img.png", headers: {}, expires: Date.now() + 60000 } }, r))`);
+    await popup.cdp.send("ServiceWorker.enable");
+    await popup.cdp.send("ServiceWorker.stopAllWorkers");
+    await sleep(500);
+    const first = await send({ type: "get_view", data: { key: "test-key" } });
+    const second = await send({ type: "get_view", data: { key: "test-key" } });
+    check("get_view survives a worker restart and is one-time", first.data?.url === `${base}/img.png` && second.data === null);
 
     browser.close();
   } finally {
