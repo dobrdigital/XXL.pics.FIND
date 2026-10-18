@@ -70,7 +70,7 @@ but how well it works depends on how the site hides its pictures.
 |---|---|---|
 | Rotten Tomatoes, movie pictures page | ✅ Checked on the live site | The scan found about 130 pictures, largest first; the hover button showed the size of the full file |
 | Test pages: `srcset`, lazy loading, `og:image`, CSS backgrounds, open shadow DOM | ✅ Automated tests | Run in a headless browser |
-| X (x.com, formerly Twitter) | ⚠️ Not checked on the live site | Videos and original photos are read from X's own API responses. The parser is tested only on a sample in X's format, because X's login wall blocks automatic checks |
+| X (x.com, formerly Twitter) | ✅ Checked by the author in a real browser | Videos and original photos are saved, including videos that X's own download button does not offer without a paid subscription. The automated test covers only the parser, on a sample in X's format, because X's login wall blocks automatic checks |
 | Behance, Dribbble | ❓ Not checked yet | Both use lazy loading and `srcset`, which the extension reads, but nothing has been tested there |
 | Pictures that need a `Referer` | ⚠️ Partly | The scan and the download work; the hover button cannot read the size of such pictures |
 | Closed shadow DOM, pictures drawn on a canvas | ❌ Not reachable | No script can read them |
@@ -249,7 +249,7 @@ The context menu itself cannot be clicked from a script; the message it sends is
 |---|---|---|
 | Rotten Tomatoes, страница с картинками фильма | ✅ Проверено на живом сайте | Скан нашёл около 130 картинок, самые большие первыми; кнопка при наведении показывала размер полного файла |
 | Тестовые страницы: `srcset`, ленивая загрузка, `og:image`, фоновые CSS-картинки, открытый shadow DOM | ✅ Автотесты | Запускаются в фоновом браузере |
-| X (x.com, бывший Twitter) | ⚠️ Не проверено на живом сайте | Видео и оригиналы фото берутся из ответов API самого X. Парсер проверен только на образце в формате X: стена входа мешает автоматической проверке |
+| X (x.com, бывший Twitter) | ✅ Проверено автором в живом браузере | Сохраняются видео и оригиналы фото, в том числе видео, которые кнопка скачивания самого X без платной подписки не предлагает. Автотест покрывает только парсер на образце в формате X: стена входа мешает автоматической проверке |
 | Behance, Dribbble | ❓ Пока не проверено | Оба сайта используют ленивую загрузку и `srcset`, которые расширение читает, но на них ничего не проверялось |
 | Картинки, которым нужен `Referer` | ⚠️ Частично | Скан и скачивание работают; кнопка при наведении не может узнать размер таких картинок |
 | Закрытый shadow DOM, картинки, нарисованные на canvas | ❌ Недоступно | Ни один скрипт их не прочитает |
