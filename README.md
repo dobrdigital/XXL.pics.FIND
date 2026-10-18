@@ -11,7 +11,6 @@
 ![Chrome extension](https://img.shields.io/badge/Chrome-extension-4285F4)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-2ea44f)
 ![Chrome 120+](https://img.shields.io/badge/Chrome-120%2B-lightgrey)
-![Tests: 40/40 passing](https://img.shields.io/badge/tests-40%2F40%20passing-brightgreen)
 ![Language: JavaScript](https://img.shields.io/badge/language-JavaScript-F7DF1E)
 ![Docs: EN / RU](https://img.shields.io/badge/docs-EN%20%2F%20RU-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
@@ -59,17 +58,36 @@ It is a Manifest V3 extension powered by the site rules of
 
 ## 🛠️ Install
 
-> Takes about a minute. No build step, no dependencies.
+> About a minute. Works in Chrome 120+, Edge, Brave and Vivaldi (Chromium browsers). No account needed.
 
-```bash
-git clone https://github.com/dobrdigital/XXL.pics.FIND
-```
+**1. Get the extension.** Download `XXL.pics.FIND-1.4.0.zip` from
+[Releases](https://github.com/dobrdigital/XXL.pics.FIND/releases) and unzip it into a folder you will keep
+(for example `DocumentsXXL.pics.FIND`). Chrome reads the files from that folder, so do not delete it.
 
-1. Open `chrome://extensions` and turn on **Developer mode**.
-2. Press **Load unpacked** and choose the cloned folder. Chrome 120 or newer.
-3. Open any picture-heavy page, hover a picture, or right-click.
+**2. Load it in the browser.**
 
-The extension id depends on the folder path unless the manifest gets a `key`.
+| Browser | Address to open | Turn on | Then |
+|---|---|---|---|
+| Chrome | `chrome://extensions` | **Developer mode** (top right) | **Load unpacked** → pick the unzipped folder |
+| Edge | `edge://extensions` | **Developer mode** (left panel) | **Load unpacked** → pick the unzipped folder |
+| Brave | `brave://extensions` | **Developer mode** (top right) | **Load unpacked** → pick the unzipped folder |
+| Vivaldi | `vivaldi://extensions` | **Developer mode** (top right) | **Load unpacked** → pick the unzipped folder |
+
+Chrome shows a warning that the extension "can't be reviewed by the Chrome Web Store" and that
+developer mode is needed. That is expected for an extension loaded from a folder; it does not
+mean the extension is unsafe. The warning is about where the code came from.
+
+**3. Use it.** Hover a picture for the ⬇ button, right-click a picture for **XXL Find This HiRes**,
+or press **Alt+Shift+A** (or the popup button) to list the largest pictures on the page.
+
+**Updating:** unzip the new version over the old folder, then press the **Reload** button of the
+extension on its page. Chrome does not pick up changed files on its own.
+
+**From source (for developers):** `git clone https://github.com/dobrdigital/XXL.pics.FIND`, then load
+the cloned folder the same way. `npm install`, `npm test` and `npm run package` are described below.
+
+The extension id depends on the folder path, which is why the same extension may show a different id
+on another computer. It does not matter for normal use.
 
 ## 🔍 How it works
 
@@ -94,14 +112,17 @@ flowchart TD
 ## 🧪 Tests
 
 `tests/run-tests.mjs` starts a Chrome with a temporary profile, loads the folder through the
-DevTools command `Extensions.loadUnpacked`, serves a local test site and runs **40 end-to-end
+DevTools command `Extensions.loadUnpacked`, serves a local test site and runs the **end-to-end
 checks**: proxy and header rules, download, scan, gallery paging, video and streams, hover
 button, shadow DOM, and the right-click action.
 
 ```bash
 npm install            # development tools only (TypeScript types)
-npm test               # node tests/run-tests.mjs  →  40/40 checks passed
+npm test               # end-to-end checks in a temporary headless Chrome (CI runs this too)
+npm run test:attach    # the same checks in a Chrome you already run with --remote-debugging-port=9222
+npm run test:unit      # checks without a browser: X parser, image header sizes
 npm run typecheck      # tsc with checkJs
+npm run package        # dist/XXL.pics.FIND-<version>.zip, the file to publish
 ```
 
 Set `CHROME_PATH` if Chrome is not under Program Files and `CDP_PORT` if port 9333 is busy.
@@ -198,17 +219,37 @@ The context menu itself cannot be clicked from a script; the message it sends is
 
 ## 🛠️ Установка
 
-> Около минуты. Без сборки и зависимостей.
+> Около минуты. Работает в Chrome 120+, Edge, Brave и Vivaldi (браузеры на Chromium). Регистрация не нужна.
 
-```bash
-git clone https://github.com/dobrdigital/XXL.pics.FIND
-```
+**1. Получите расширение.** Скачайте `XXL.pics.FIND-1.4.0.zip` со страницы
+[Releases](https://github.com/dobrdigital/XXL.pics.FIND/releases) и распакуйте в папку, которую
+не будете удалять (например `ДокументыXXL.pics.FIND`). Браузер читает файлы из этой папки.
 
-1. Откройте `chrome://extensions` и включите **режим разработчика**.
-2. Нажмите **Load unpacked** и выберите склонированную папку. Нужен Chrome 120 или новее.
-3. Откройте любую страницу с картинками, наведите мышь на картинку или нажмите правую кнопку.
+**2. Загрузите в браузер.**
 
-ID расширения зависит от пути к папке, пока в манифесте нет поля `key`.
+| Браузер | Адрес | Включите | Затем |
+|---|---|---|---|
+| Chrome | `chrome://extensions` | **Режим разработчика** (справа вверху) | **Load unpacked** → выберите распакованную папку |
+| Edge | `edge://extensions` | **Режим разработчика** (слева внизу) | **Load unpacked** → выберите распакованную папку |
+| Brave | `brave://extensions` | **Режим разработчика** (справа вверху) | **Load unpacked** → выберите распакованную папку |
+| Vivaldi | `vivaldi://extensions` | **Режим разработчика** (справа вверху) | **Load unpacked** → выберите распакованную папку |
+
+Chrome покажет предупреждение, что расширение «не может быть проверено Chrome Web Store» и нужен
+режим разработчика. Для расширения, загруженного из папки, это нормально. Предупреждение говорит
+только о том, что код загружен не из магазина, а не о том, что он опасен.
+
+**3. Пользуйтесь.** Наведите мышь на картинку, чтобы появилась кнопка ⬇, или нажмите правую кнопку
+на картинке и выберите **XXL Find This HiRes**. Чтобы найти самые большие картинки страницы,
+нажмите **Alt+Shift+A** или кнопку в окне расширения.
+
+**Обновление:** распакуйте новую версию поверх старой папки и нажмите кнопку **Перезагрузить
+(Reload)** у расширения на его странице. Браузер сам изменённые файлы не подхватывает.
+
+**Из исходников (для разработчиков):** `git clone https://github.com/dobrdigital/XXL.pics.FIND`, затем
+загрузите склонированную папку так же. Команды `npm install`, `npm test` и `npm run package` описаны ниже.
+
+ID расширения зависит от пути к папке, поэтому на другом компьютере он может отличаться. Для
+обычного использования это не важно.
 
 ## 🔍 Как устроено
 
@@ -224,14 +265,16 @@ ID расширения зависит от пути к папке, пока в 
 ## 🧪 Тесты
 
 `tests/run-tests.mjs` запускает Chrome с временным профилем, загружает папку командой DevTools
-`Extensions.loadUnpacked`, поднимает локальный тестовый сайт и выполняет **40 сквозных
-проверок**: прокси и правила заголовков, скачивание, скан, постраничная галерея, видео и
+`Extensions.loadUnpacked`, поднимает локальный тестовый сайт и выполняет **сквозные проверки**: прокси и правила заголовков, скачивание, скан, постраничная галерея, видео и
 потоки, кнопка при наведении, shadow DOM и действие правой кнопки.
 
 ```bash
 npm install            # только инструменты разработки (типы TypeScript)
-npm test               # node tests/run-tests.mjs  →  40/40 checks passed
+npm test               # сквозные проверки во временном headless Chrome (их запускает и CI)
+npm run test:attach    # то же самое в уже запущенном Chrome с --remote-debugging-port=9222
+npm run test:unit      # проверки без браузера: парсер X, чтение размеров картинок
 npm run typecheck      # tsc с checkJs
+npm run package        # dist/XXL.pics.FIND-<версия>.zip, файл для публикации
 ```
 
 Само контекстное меню из скрипта не нажать; сообщение, которое оно отправляет, покрыто тестом.
