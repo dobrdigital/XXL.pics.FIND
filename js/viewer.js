@@ -91,6 +91,8 @@ chrome.runtime.sendMessage({ type: "get_view", data: { key } }, (reply) => {
   chrome.runtime.sendMessage(
     { type: "request", data: { url: view.url, headers: view.headers, responseType: "blob" } },
     (started) => {
+      // No reply when the worker failed to start the request (it answers { error }).
+      if (chrome.runtime.lastError || !started || !started.data) return fail("Could not load the image.");
       requestId = started.data;
       if (events.has(requestId)) handle(events.get(requestId));
     },

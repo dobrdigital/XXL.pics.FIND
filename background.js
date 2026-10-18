@@ -122,6 +122,16 @@ function webUrl(url) {
   return parsed;
 }
 
+// URLs a content script may ask the worker to open in a tab or download. A content script
+// runs inside every page, so chrome://, file:// and extension pages are refused here.
+function openableUrl(url) {
+  const protocol = new URL(url).protocol;
+  if (!["http:", "https:", "data:", "blob:"].includes(protocol)) {
+    throw new Error("unsupported URL scheme " + protocol);
+  }
+  return url;
+}
+
 // Matches exactly one URL. urlFilter has no size limit and no regex-rule quota
 // (Chrome allows 1000 regex rules); regexFilter is the fallback for URLs that contain
 // urlFilter's own wildcard characters. Rules must be ASCII, so the URL is normalised
@@ -274,6 +284,7 @@ async function runRequest(reqid, request) {
 // ---- downloads and new tabs --------------------------------------------------
 
 async function downloadImage(imu, saveAs) {
+  openableUrl(imu.url);
   // Images that need headers are fetched by the viewer page through the proxy and
   // saved from a blob URL there (chrome.downloads only accepts a few request headers).
   if (Object.keys(imu.headers || {}).length > 0) {
@@ -316,6 +327,7 @@ async function takeView(key) {
 }
 
 async function openImageTab(imu, background, openerTabId) {
+  openableUrl(imu.url);
   const options = { openerTabId };
   if (background !== undefined) options.active = !background;
 
@@ -546,6 +558,7 @@ function captureResponse(details) {
   if (!kind) return;
   const seen = details.tabId + " " + details.url;
   if (seenMedia.has(seen)) return;
+  if (seenMedia.size > 5000) seenMedia.clear(); // only a shortcut against repeated writes
   seenMedia.add(seen);
   // A range request answers "bytes a-b/total"; the total is the size of the file.
   const range = header("content-range").match(/\/(\d+)$/);
@@ -559,8 +572,32 @@ chrome.webRequest.onResponseStarted.addListener(captureResponse, {
   types: ["xmlhttprequest", "other"],
 }, ["responseHeaders"]);
 
+// Forgets what a tab loaded. Goes through the same write chain as rememberMedia, so a
+// write that is still running cannot put the old list back afterwards.
+function forgetMedia(tabId) {
+  for (const seen of seenMedia) {
+    if (seen.startsWith(tabId + " ")) seenMedia.delete(seen);
+  }
+  for (const key of [NET_PREFIX + tabId, MEDIA_PREFIX + tabId]) {
+    const next = (mediaWrites.get(key) || Promise.resolve())
+      .then(() => chrome.storage.session.remove(key))
+      .catch(() => {});
+    mediaWrites.set(key, next);
+  }
+}
+
+// A new document in the tab starts a new list. Without this a scan of page B also listed
+// the videos of page A that was open in the same tab before. Same-document navigations
+// (history.pushState on x.com) make no main_frame request and keep the list.
+chrome.webRequest.onBeforeRequest.addListener((details) => {
+  if (details.tabId >= 0) forgetMedia(details.tabId);
+  return undefined; // observe only; the types want a BlockingResponse
+}, { urls: ["<all_urls>"], types: ["main_frame"] });
+
 chrome.tabs.onRemoved.addListener((tabId) => {
-  chrome.storage.session.remove([NET_PREFIX + tabId, MEDIA_PREFIX + tabId]).catch(() => {});
+  forgetMedia(tabId);
+  mediaWrites.delete(NET_PREFIX + tabId);
+  mediaWrites.delete(MEDIA_PREFIX + tabId);
 });
 
 // ---- hover download button: the best source file for one picture or video -----
@@ -569,7 +606,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 const probeCache = new Map();
 function probeCached(url) {
   if (probeCache.size > 500) probeCache.clear();
-  if (!probeCache.has(url)) probeCache.set(url, probeImageSize(url));
+  if (!probeCache.has(url)) {
+    // A failure (timeout, a server that was busy) is not kept, so the next hover tries again.
+    const probe = probeImageSize(url).then((size) => {
+      if (!size) probeCache.delete(url);
+      return size;
+    });
+    probeCache.set(url, probe);
+  }
   return probeCache.get(url);
 }
 
@@ -693,7 +737,8 @@ const handlers = {
     return { type: "best_video", data: sender.tab ? await bestVideo(sender.tab.id) : null };
   },
 
-  // Sent by the toolbar popup. Without a tabId the active tab of the current window is used.
+  // Sent by the toolbar popup with the tab it was opened on. Without a tabId the active
+  // tab of the current window is used.
   async scan_page(message) {
     let tabId = message.data && message.data.tabId;
     if (tabId === undefined) {
@@ -748,8 +793,24 @@ const handlers = {
   notification: () => ({ data: null }),
 };
 
+// Messages only the extension's own pages send (popup, gallery, viewer). Content scripts
+// run inside every web page, so they must not start a scan of another tab or read a
+// pending viewer entry.
+const PAGE_ONLY = new Set(["scan_page", "get_view"]);
+
+function fromExtensionPage(sender) {
+  // The viewer and the gallery are tabs too, so sender.tab says nothing; the URL does.
+  return sender.id === chrome.runtime.id && String(sender.url).startsWith(chrome.runtime.getURL(""));
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handler = handlers[message && message.type];
+  const type = message && message.type;
+  // Object.hasOwn: a type such as "toString" must not reach Object.prototype.
+  const handler = typeof type === "string" && Object.hasOwn(handlers, type) ? handlers[type] : null;
+  if (handler && PAGE_ONLY.has(type) && !fromExtensionPage(sender)) {
+    sendResponse({ error: "not allowed from a web page", type });
+    return false;
+  }
   if (!handler) {
     sendResponse({ error: "not ported to MV3 yet", type: message && message.type });
     return false;

@@ -1,51 +1,38 @@
-// End-to-end checks for the MV3 build. Starts a headless Chrome with a temporary
-// profile and download folder, loads this folder as an unpacked extension through
-// the DevTools Extensions domain, and checks each message type the userscript uses.
-// Usage: node tests/run-tests.mjs
+// End-to-end checks for the MV3 build. Loads this folder as an unpacked extension
+// through the DevTools Extensions domain and checks each message type the userscript
+// uses, the page scan, the gallery, the hover button and the right-click action.
+//
+// Two ways to run it:
+//   node tests/run-tests.mjs                 starts a headless Chrome with a temporary
+//                                            profile and download folder (CI, other people)
+//   node tests/run-tests.mjs --attach [port] uses a Chrome that is already running with
+//                                            --remote-debugging-port (default 9222) and
+//                                            --enable-unsafe-extension-debugging. Nothing
+//                                            else is started. The test tabs open in that
+//                                            browser and are closed again; settings the
+//                                            tests change are put back, and the test's
+//                                            own downloads and cookie are removed.
 // Environment: CHROME_PATH (default: Chrome under Program Files), CDP_PORT (default 9333).
+// The checks that need no browser are in tests/unit.test.mjs.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import vm from "node:vm";
-import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
+import { makePng } from "./png.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CHROME = process.env.CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-const PORT = Number(process.env.CDP_PORT || 9333);
+const attachAt = process.argv.indexOf("--attach");
+const ATTACH = attachAt !== -1;
+const PORT = ATTACH ? Number(process.argv[attachAt + 1] || 9222) : Number(process.env.CDP_PORT || 9333);
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
   "base64",
 );
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const outcomes = [];
-
-// A solid grey PNG of the given size, so the tests can tell images apart by real size.
-function makePng(width, height) {
-  const chunk = (type, data) => {
-    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
-    const out = Buffer.alloc(body.length + 8);
-    out.writeUInt32BE(data.length, 0);
-    body.copy(out, 4);
-    out.writeUInt32BE(zlib.crc32(body), body.length + 4);
-    return out;
-  };
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(width, 0);
-  header.writeUInt32BE(height, 4);
-  header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
-  const row = Buffer.alloc(1 + width * 3, 0x80);
-  row[0] = 0;
-  const raw = Buffer.concat(Array.from({ length: height }, () => row));
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", header),
-    chunk("IDAT", zlib.deflateSync(raw)),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-}
 
 function check(name, ok, detail = "") {
   outcomes.push(ok);
@@ -222,6 +209,12 @@ customElements.define("fake-img", FakeImg);
 <video src="/clip.mp4" muted preload="auto"></video>
 <script>fetch("/live.m3u8").then((r) => r.text());</script>`);
     }
+    // The same picture under two addresses, and a different one: the gallery must show two.
+    if (pathname === "/dup-page") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><title>dup</title>
+<img src="/png?w=500&h=300&copy=1"><img src="/png?w=500&h=300&copy=2"><img src="/png?w=400&h=300">`);
+    }
     if (pathname === "/page") {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end('<!doctype html><title>page</title><img src="/img.png" width="40" height="40">');
@@ -251,9 +244,8 @@ function stopChrome(child) {
   }
 }
 
-async function main() {
-  const site = await startSite();
-  const base = `http://127.0.0.1:${site.address().port}`;
+// Starts the headless Chrome of the default mode. Returns the process and its folders.
+function launchChrome() {
   const profile = mkdtempSync(path.join(os.tmpdir(), "imu-profile-"));
   const downloads = mkdtempSync(path.join(os.tmpdir(), "imu-downloads-"));
   // Point Chrome's download folder at the temporary one through the profile. Do not use
@@ -263,21 +255,35 @@ async function main() {
   writeFileSync(path.join(profile, "Default", "Preferences"), JSON.stringify({
     download: { default_directory: downloads, prompt_for_download: false },
   }));
-  const chrome = spawn(CHROME, [
+  const child = spawn(CHROME, [
     "--headless=new",
     "--no-first-run",
     "--no-default-browser-check",
+    // CI runners (Ubuntu 24.04) do not allow Chrome's sandbox; it stays on everywhere else.
+    ...(process.env.CI ? ["--no-sandbox"] : []),
     `--remote-debugging-port=${PORT}`,
     `--user-data-dir=${profile}`,
     "--enable-unsafe-extension-debugging",
     "about:blank",
   ], { stdio: "ignore" });
+  return { child, folders: [profile, downloads] };
+}
+
+async function main() {
+  const site = await startSite();
+  const base = `http://127.0.0.1:${site.address().port}`;
+  const started = Date.now();
+  const launched = ATTACH ? null : launchChrome();
+  // Targets that were open before the tests; an old gallery tab must not be taken for a new one.
+  const before = new Set();
 
   try {
     const version = await waitForChrome();
+    for (const target of await getJson("/json/list")) before.add(target.id);
     const browser = openCdp(version.webSocketDebuggerUrl);
     await browser.ready;
     const loaded = await browser.send("Extensions.loadUnpacked", { path: ROOT });
+    if (!loaded.result) throw new Error("Extensions.loadUnpacked failed: " + JSON.stringify(loaded.error) + " (is Chrome started with --enable-unsafe-extension-debugging?)");
     const extId = loaded.result.id;
 
     // Opens a page target and returns a client for it.
@@ -286,6 +292,16 @@ async function main() {
       const cdp = openCdp(target.webSocketDebuggerUrl);
       await cdp.ready;
       return { target, cdp };
+    }
+
+    // Waits for a tab this run opened whose URL contains every given part.
+    async function waitForTarget(...parts) {
+      for (let i = 0; i < 50; i++) {
+        const found = (await getJson("/json/list")).find((t) => !before.has(t.id) && parts.every((part) => t.url.includes(part)));
+        if (found) return found;
+        await sleep(100);
+      }
+      return null;
     }
 
     const popup = await openTarget(`chrome-extension://${extId}/html/popup.html`);
@@ -326,13 +342,28 @@ async function main() {
     // Content script: the userscript must load on an ordinary page without errors.
     const page = await openTarget(`${base}/page`);
     const problems = [];
+    let contentWorld = null; // the content scripts' isolated world in the top frame
     page.cdp.onEvent((msg) => {
       if (msg.method === "Runtime.exceptionThrown") problems.push((msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text).split("\n")[0]);
       if (msg.method === "Runtime.consoleAPICalled" && msg.params.type === "error") problems.push("console.error");
+      const context = msg.method === "Runtime.executionContextCreated" ? msg.params.context : null;
+      if (context && context.auxData?.type === "isolated" && (context.origin.includes(extId) || context.name === "XXL.pics.FIND")) contentWorld = context.id;
     });
     await page.cdp.send("Runtime.enable");
     await sleep(4000);
     check("content script loads on a normal page", problems.length === 0, problems.slice(0, 3).join("; "));
+
+    // A content script runs inside every web page, so the worker must refuse it the
+    // messages only the extension's own pages send.
+    const refused = contentWorld === null ? null : (await page.cdp.send("Runtime.evaluate", {
+      contextId: contentWorld,
+      expression: `Promise.all(["scan_page", "get_view"].map((type) => chrome.runtime.sendMessage({ type, data: { key: "x" } })))`,
+      awaitPromise: true,
+      returnByValue: true,
+    })).result.result.value;
+    check("worker refuses scan_page and get_view from a content script", Array.isArray(refused) && refused.every((reply) => reply && /not allowed/.test(reply.error)), JSON.stringify(refused));
+    const strange = await send({ type: "toString" });
+    check("an unknown type such as toString gets an error, not Object.prototype", /not ported/.test(strange?.error || ""), JSON.stringify(strange));
     page.cdp.close();
     await closeTarget(page.target.id);
 
@@ -349,7 +380,9 @@ async function main() {
     const stored = await send({ type: "getvalue", data: ["imu_test_key"] });
     check("setvalue / getvalue round trip", stored.data.imu_test_key === "xyz");
     const menuOff = await send({ type: "setvalue", data: { extension_contextmenu: "false" } });
-    check("setvalue accepts the context-menu flag", menuOff.type === "setvalue");
+    const menuOn = await send({ type: "setvalue", data: { extension_contextmenu: "true" } }); // put the menu back
+    check("setvalue accepts the context-menu flag", menuOff.type === "setvalue" && menuOn.type === "setvalue");
+    await popup.cdp.eval(`chrome.storage.sync.remove("imu_test_key").then(() => true)`);
 
     // Libraries: a missing or unsafe name must return null, not an error.
     const missing = await send({ type: "get_lib", data: { name: "missing" } });
@@ -358,12 +391,7 @@ async function main() {
 
     // New tab with headers: opens the viewer page, which shows the image.
     await send({ type: "newtab", data: { imu: { url: `${base}/protected.png`, headers: { Referer: "https://example.org/page" } }, background: true } });
-    let viewerTarget = null;
-    for (let i = 0; i < 50 && !viewerTarget; i++) {
-      const targets = await getJson("/json/list");
-      viewerTarget = targets.find((t) => t.url.includes("viewer.html")) || null;
-      if (!viewerTarget) await sleep(100);
-    }
+    const viewerTarget = await waitForTarget("viewer.html");
     let width = null;
     if (viewerTarget) {
       const viewer = openCdp(viewerTarget.webSocketDebuggerUrl);
@@ -388,8 +416,9 @@ async function main() {
       if (item && item.state === "complete") break;
     }
     const saved = item && item.state === "complete" ? path.basename(item.filename) : null;
-    const size = saved ? statSync(path.join(downloads, saved)).size : 0;
-    check("download with headers saves the image", saved === "protected.png" && size === PNG.length, saved ? `${saved}, ${size} bytes` : "no completed download");
+    const size = saved ? statSync(item.filename).size : 0;
+    // A real Downloads folder may hold an older protected.png; Chrome then adds " (1)".
+    check("download with headers saves the image", /^protected(?: \(\d+\))?\.png$/.test(saved || "") && size === PNG.length, saved ? `${saved}, ${size} bytes` : "no completed download");
 
     // ---- hardening checks ----------------------------------------------------
 
@@ -434,12 +463,24 @@ async function main() {
     // being stopped, and each key can be read once.
     const sessionKey = "view:test-key";
     await popup.cdp.eval(`new Promise((r) => chrome.storage.session.set({ "${sessionKey}": { url: "${base}/img.png", headers: {}, expires: Date.now() + 60000 } }, r))`);
+    // Only this extension's worker is stopped; stopAllWorkers would stop every site's
+    // service worker in the browser.
+    const workerVersions = [];
+    popup.cdp.onEvent((msg) => {
+      if (msg.method === "ServiceWorker.workerVersionUpdated") workerVersions.push(...msg.params.versions);
+    });
     await popup.cdp.send("ServiceWorker.enable");
-    await popup.cdp.send("ServiceWorker.stopAllWorkers");
+    await sleep(300);
+    let stoppedWorkers = 0;
+    for (const workerVersion of workerVersions.filter((v) => v.scriptURL.startsWith(`chrome-extension://${extId}/`) && v.runningStatus === "running")) {
+      await popup.cdp.send("ServiceWorker.stopWorker", { versionId: workerVersion.versionId });
+      stoppedWorkers++;
+    }
+    await popup.cdp.send("ServiceWorker.disable");
     await sleep(500);
     const first = await send({ type: "get_view", data: { key: "test-key" } });
     const second = await send({ type: "get_view", data: { key: "test-key" } });
-    check("get_view survives a worker restart and is one-time", first.data?.url === `${base}/img.png` && second.data === null);
+    check("get_view survives a worker restart and is one-time", stoppedWorkers > 0 && first.data?.url === `${base}/img.png` && second.data === null, `${stoppedWorkers} worker stopped`);
 
     // ---- page scan and gallery ----------------------------------------------
 
@@ -455,12 +496,7 @@ async function main() {
     check("scan records where each image came from", ["img", "srcset", "link", "meta", "background"].every((s) => sources.has(s)), [...sources].join(","));
 
     // The gallery opens by itself; it must list the images largest first, by real size.
-    let galleryTarget = null;
-    for (let i = 0; i < 50 && !galleryTarget; i++) {
-      const targets = await getJson("/json/list");
-      galleryTarget = targets.find((t) => t.url.includes("gallery.html")) || null;
-      if (!galleryTarget) await sleep(100);
-    }
+    const galleryTarget = await waitForTarget("gallery.html", scanned.data?.key);
     let order = [];
     let orderAll = [];
     if (galleryTarget) {
@@ -496,12 +532,7 @@ async function main() {
     check("scan lists a <video> file and its size from the network", video?.kind === "video" && video.bytes === 2000, JSON.stringify(video));
     check("scan lists an HLS playlist loaded by script", stream?.kind === "stream" && stream.source === "network", JSON.stringify(stream));
 
-    let mediaGallery = null;
-    for (let i = 0; i < 50 && !mediaGallery; i++) {
-      const targets = await getJson("/json/list");
-      mediaGallery = targets.find((t) => t.url.includes("gallery.html") && t.url.includes(mediaScan.data?.key)) || null;
-      if (!mediaGallery) await sleep(100);
-    }
+    const mediaGallery = await waitForTarget("gallery.html", mediaScan.data?.key);
     let streamText = "";
     let hasPlayer = false;
     if (mediaGallery) {
@@ -516,60 +547,38 @@ async function main() {
       await closeTarget(mediaGallery.id);
     }
     check("gallery plays video files and reads the best stream variant", hasPlayer && /best variant: 1920x1080 · 5000 kbps/.test(streamText), streamText.slice(0, 80));
+    // A new document in the same tab starts a new list: the video of the page before must
+    // not appear in a scan of the next page.
+    await mediaPage.cdp.send("Page.navigate", { url: `${base}/page` });
+    await sleep(1500);
+    const nextScan = await send({ type: "scan_page", data: { tabId: mediaTab } });
+    const nextStored = await popup.cdp.eval(`new Promise((r) => chrome.storage.session.get(${JSON.stringify("scan:" + nextScan.data?.key)}, r))`);
+    const nextItems = nextStored[`scan:${nextScan.data?.key}`]?.items ?? [];
+    check("a scan after navigating away does not list the previous page's video", nextItems.length > 0 && !nextItems.some((item) => /clip.mp4|live.m3u8/.test(item.url)), nextItems.map((item) => item.url).join(" "));
+    const nextGallery = await waitForTarget("gallery.html", nextScan.data?.key);
+    if (nextGallery) await closeTarget(nextGallery.id);
     mediaPage.cdp.close();
     await closeTarget(mediaPage.target.id);
 
-    // The X parser: a response shaped like TweetResultByRestId (yt-dlp's reference).
-    const hookContext = { module: { exports: {} }, window: { location: { hostname: "example.test" } } };
-    vm.runInNewContext(readFileSync(path.join(ROOT, "js", "media-hook.js"), "utf8"), hookContext);
-    const tweet = { data: { tweetResult: { result: { legacy: {
-      extended_entities: { media: [
-        { type: "video", media_url_https: "https://pbs.twimg.com/amplify_video_thumb/1/img/a.jpg", video_info: { variants: [
-          { content_type: "application/x-mpegURL", url: "https://video.twimg.com/amplify_video/1/pl/x.m3u8?tag=14" },
-          { bitrate: 832000, content_type: "video/mp4", url: "https://video.twimg.com/amplify_video/1/vid/avc1/480x270/a.mp4?tag=14" },
-          { bitrate: 2176000, content_type: "video/mp4", url: "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4?tag=14" },
-        ] } },
-        { type: "photo", media_url_https: "https://pbs.twimg.com/media/ABCdef.jpg", original_info: { width: 4096, height: 2731 } },
-      ] },
-    }, quoted_status_result: { result: { legacy: { extended_entities: { media: [
-      { type: "animated_gif", video_info: { variants: [{ bitrate: 0, content_type: "video/mp4", url: "https://video.twimg.com/tweet_video/G.mp4" }] } },
-    ] } } } } } } } };
-    const parsed = hookContext.module.exports.extractMedia(tweet);
-    const best = parsed.filter((m) => m.kind === "video").sort((a, b) => b.bitrate - a.bitrate)[0];
-    const photo = parsed.find((m) => m.kind === "image");
-    check("X parser finds every video variant, the original photo and quoted media",
-      parsed.length === 5 && best?.width === 1280 && best.height === 720 && best.bitrate === 2176000
-        && photo?.url === "https://pbs.twimg.com/media/ABCdef?format=jpg&name=orig" && photo.width === 4096
-        && parsed.some((m) => m.kind === "stream") && parsed.some((m) => m.url.endsWith("/G.mp4")),
-      `${parsed.length} items`);
+    // ---- gallery: the same file under two addresses is shown once ------------
 
-    // ---- reading image sizes from the first bytes ---------------------------
-
-    const sizeContext = {};
-    vm.createContext(sizeContext);
-    vm.runInContext(readFileSync(path.join(ROOT, "js", "imagesize.js"), "utf8"), sizeContext);
-    const readSize = (bytes) => JSON.stringify(sizeContext.imageSizeFromBytes(bytes));
-    const padTo = (parts, length = 64) => Buffer.concat([...parts, Buffer.alloc(Math.max(0, length - Buffer.concat(parts).length))]);
-    const u16 = (n) => Buffer.from([n >> 8, n & 255]);
-    const u32 = (n) => Buffer.from([n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255]);
-    const le24 = (n) => Buffer.from([n & 255, (n >> 8) & 255, (n >> 16) & 255]);
-    const jpeg = padTo([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.alloc(14), Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08]), u16(1066), u16(1600), Buffer.from([3])]);
-    const gif = padTo([Buffer.from("GIF89a"), Buffer.from([0x20, 0x03, 0x58, 0x02])]);
-    const webpX = padTo([Buffer.from("RIFF"), u32(0), Buffer.from("WEBPVP8X"), u32(10), Buffer.alloc(4), le24(1919), le24(1079)]);
-    const lossless = (1279) | (719 << 14);
-    const webpL = padTo([Buffer.from("RIFF"), u32(0), Buffer.from("WEBPVP8L"), u32(5), Buffer.from([0x2f, lossless & 255, (lossless >> 8) & 255, (lossless >> 16) & 255, (lossless >> 24) & 255])]);
-    const webpLossy = padTo([Buffer.from("RIFF"), u32(0), Buffer.from("WEBPVP8 "), u32(10), Buffer.from([0, 0, 0, 0x9d, 0x01, 0x2a, 640 & 255, 640 >> 8, 480 & 255, 480 >> 8])]);
-    const avif = padTo([u32(24), Buffer.from("ftypavif"), Buffer.alloc(4), Buffer.from("avifmif1"), u32(20), Buffer.from("ispe"), Buffer.alloc(4), u32(3000), u32(2000)]);
-    check("image size is read from PNG, JPEG, GIF, WebP (3 kinds) and AVIF headers",
-      readSize(makePng(321, 123)) === '{"width":321,"height":123}'
-        && readSize(jpeg) === '{"width":1600,"height":1066}'
-        && readSize(gif) === '{"width":800,"height":600}'
-        && readSize(webpX) === '{"width":1920,"height":1080}'
-        && readSize(webpL) === '{"width":1280,"height":720}'
-        && readSize(webpLossy) === '{"width":640,"height":480}'
-        && readSize(avif) === '{"width":3000,"height":2000}'
-        && sizeContext.imageSizeFromBytes(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'></svg>")) === null,
-      [readSize(jpeg), readSize(gif), readSize(webpX), readSize(webpL), readSize(webpLossy), readSize(avif)].join(" "));
+    const dupPage = await openTarget(`${base}/dup-page`);
+    await sleep(1000);
+    const dupTab = await popup.cdp.eval(`new Promise((r) => chrome.tabs.query({ url: ${JSON.stringify(base + "/dup-page")} }, (tabs) => r(tabs.length ? tabs[0].id : -1)))`);
+    const dupScan = await send({ type: "scan_page", data: { tabId: dupTab } });
+    const dupGallery = await waitForTarget("gallery.html", dupScan.data?.key);
+    let dupCards = [];
+    if (dupGallery) {
+      const gallery = openCdp(dupGallery.webSocketDebuggerUrl);
+      await gallery.ready;
+      await sleep(2500);
+      dupCards = await gallery.eval(`[...document.querySelectorAll(".card")].map((c) => new URL(c.dataset.url).search)`);
+      gallery.close();
+      await closeTarget(dupGallery.id);
+    }
+    check("gallery shows a file served under two addresses once", dupCards.length === 2 && dupCards.some((q) => q.includes("w=400")), dupCards.join(" "));
+    dupPage.cdp.close();
+    await closeTarget(dupPage.target.id);
 
     // ---- gallery: nine at a time, sizes measured from the file header ---------
 
@@ -577,12 +586,7 @@ async function main() {
     await sleep(1000);
     const manyTab = await popup.cdp.eval(`new Promise((r) => chrome.tabs.query({ url: ${JSON.stringify(base + "/many-page")} }, (tabs) => r(tabs.length ? tabs[0].id : -1)))`);
     const manyScan = await send({ type: "scan_page", data: { tabId: manyTab } });
-    let manyGallery = null;
-    for (let i = 0; i < 50 && !manyGallery; i++) {
-      const targets = await getJson("/json/list");
-      manyGallery = targets.find((t) => t.url.includes("gallery.html") && t.url.includes(manyScan.data?.key)) || null;
-      if (!manyGallery) await sleep(100);
-    }
+    const manyGallery = await waitForTarget("gallery.html", manyScan.data?.key);
     let firstPage = [];
     let moreLabel = "";
     let allCards = 0;
@@ -702,11 +706,7 @@ async function main() {
     check("scan adds the original named by the site rules, marked with its thumbnail", upgraded?.source === "rule" && String(upgraded.from).includes("/thumb/a/ab/pic.png/"), JSON.stringify(upgraded));
 
     // The gallery measures both files and shows only the original: it replaces the thumbnail.
-    let shadowGallery = null;
-    for (let i = 0; i < 50 && !shadowGallery; i++) {
-      shadowGallery = (await getJson("/json/list")).find((t) => t.url.includes("gallery.html")) || null;
-      if (!shadowGallery) await sleep(100);
-    }
+    const shadowGallery = await waitForTarget("gallery.html", shadowScan.data?.key);
     let shadowCards = [];
     if (shadowGallery) {
       const gallery = openCdp(shadowGallery.webSocketDebuggerUrl);
@@ -733,12 +733,27 @@ async function main() {
     shadowPage.cdp.close();
     await closeTarget(shadowPage.target.id);
 
+    // What the tests left in the browser: their downloads (files and list entries) and the
+    // test cookie. In the default mode the whole temporary profile goes anyway; in attach
+    // mode this keeps the real profile clean. Only items this run created are touched.
+    await popup.cdp.eval(`(async () => {
+      const mine = (await chrome.downloads.search({ startedAfter: new Date(${started}).toISOString() }))
+        .filter((d) => d.url.startsWith(${JSON.stringify(base)}) || d.url.startsWith("blob:chrome-extension://${extId}/"));
+      for (const d of mine) {
+        if (d.exists && d.state === "complete") await chrome.downloads.removeFile(d.id).catch(() => {});
+        await chrome.downloads.erase({ id: d.id });
+      }
+      await chrome.cookies.remove({ url: ${JSON.stringify(base + "/")}, name: "imu_test" });
+      return true;
+    })()`);
+    popup.cdp.close();
+    await closeTarget(popup.target.id);
     browser.close();
   } finally {
-    stopChrome(chrome);
+    if (launched) stopChrome(launched.child);
     site.close();
     await sleep(500);
-    for (const dir of [profile, downloads]) {
+    for (const dir of launched ? launched.folders : []) {
       try {
         rmSync(dir, { recursive: true, force: true });
       } catch (error) {

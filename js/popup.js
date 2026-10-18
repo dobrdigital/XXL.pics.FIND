@@ -24,10 +24,13 @@ hoverButton.addEventListener("change", () => {
 // Scan the active tab for its largest pictures. The worker opens the gallery page.
 const scan = /** @type {HTMLButtonElement} */ (document.getElementById("scan"));
 const scanStatus = /** @type {HTMLElement} */ (document.getElementById("scan-status"));
-scan.addEventListener("click", () => {
+scan.addEventListener("click", async () => {
   scan.disabled = true;
   scanStatus.textContent = "Scanning…";
-  chrome.runtime.sendMessage({ type: "scan_page" }, (reply) => {
+  // The popup knows which tab it was opened on; the worker's own "current window" can be
+  // another window when several are open.
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  chrome.runtime.sendMessage({ type: "scan_page", data: { tabId: tab && tab.id } }, (reply) => {
     if (chrome.runtime.lastError || !reply || reply.error) {
       scan.disabled = false;
       scanStatus.textContent = "This page cannot be scanned.";

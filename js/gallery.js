@@ -25,9 +25,27 @@ let items = [];
 let pending = [];
 let shown = 0;
 let pageUrl = "";
-// Thumbnail URLs whose original (an item with `from` set) was found and measured. The
-// thumbnail is then left out of the list, because the original replaces it.
-const replaced = new Set();
+// Thumbnail URL -> its original (an item with `from` set), once the original was
+// measured. The thumbnail is then left out of the list, because the original replaces
+// it, but only when the original is not smaller (a rule can name a different variant).
+const originals = new Map();
+// "width×height bytes" -> URL of the first file seen with that size. Two URLs whose
+// files have the same pixels and the same byte count are one file served twice (a CDN
+// with two addresses, a resizer asked for the full size), so the second is left out.
+const sameFile = new Map();
+
+function signature(item) {
+  return (item.kind || "image") === "image" && item.width > 0 && item.height > 0 && item.bytes > 0
+    ? item.width + "×" + item.height + " " + item.bytes
+    : "";
+}
+
+// Called once an item's size is known.
+function noteSize(item) {
+  if (item.from) originals.set(item.from, item);
+  const key = signature(item);
+  if (key && !sameFile.has(key)) sameFile.set(key, item.url);
+}
 
 // Video and stream files usually have no size in the list. They are ranked as if they
 // were full HD so they appear on the first pages instead of at the very end.
@@ -47,13 +65,26 @@ function bySize(a, b) {
 // An image is hidden by the size filter only when its size is known and too small.
 function passesFilter(item) {
   const min = Number(minSelect.value);
-  if (replaced.has(item.url)) return false;
+  const original = originals.get(item.url);
+  if (original && areaOf(original) >= areaOf(item)) return false;
+  const key = signature(item);
+  if (key && sameFile.get(key) !== item.url) return false;
   return !(item.width > 0 && item.height > 0 && Math.min(item.width, item.height) < min);
 }
 
 // Reads sizes for the images that have none, a few at a time. Resolves when all are done.
+// Images that share their pixel size with another one are read too, for the byte count
+// that tells two copies of one file apart from two different pictures (sameFile).
+// shortcut: the shared sizes are counted once, before the probes; two images that get the
+// same size only from a probe are compared only when both were probed.
 async function measureAll() {
-  const todo = items.filter((item) => (item.kind || "image") === "image" && !(item.width > 0 && item.height > 0));
+  const sizeKey = (item) => item.width + "×" + item.height;
+  const sizeCount = new Map();
+  for (const item of items) {
+    if (item.width > 0 && item.height > 0) sizeCount.set(sizeKey(item), (sizeCount.get(sizeKey(item)) || 0) + 1);
+  }
+  const todo = items.filter((item) => (item.kind || "image") === "image"
+    && (!(item.width > 0 && item.height > 0) || (!item.bytes && sizeCount.get(sizeKey(item)) > 1)));
   let next = 0;
   async function worker() {
     while (next < todo.length) {
@@ -63,7 +94,7 @@ async function measureAll() {
         item.width = size.width;
         item.height = size.height;
         if (size.bytes) item.bytes = size.bytes;
-        if (item.from) replaced.add(item.from);
+        noteSize(item);
       }
     }
   }
@@ -174,10 +205,15 @@ function makeCard(item) {
   open.target = "_blank";
   open.rel = "noreferrer";
 
+  // Through the worker, like the hover button. A picture that did not load here needs the
+  // page as Referer; the worker then saves it through the viewer page with that header.
   const save = document.createElement("button");
   save.textContent = "Download";
   save.addEventListener("click", () => {
-    chrome.downloads.download({ url: item.url });
+    const headers = card.classList.contains("failed") ? { Referer: pageUrl } : {};
+    chrome.runtime.sendMessage({ type: "download", data: { imu: { url: item.url, headers }, force_saveas: false } }, (reply) => {
+      if (chrome.runtime.lastError || !reply || reply.error) save.textContent = "Download failed";
+    });
   });
 
   const copy = document.createElement("button");
@@ -231,7 +267,10 @@ minSelect.addEventListener("change", restart);
   pageUrl = scan.pageUrl;
   title.textContent = scan.title ? "Largest images on: " + scan.title : "Largest images on this page";
   document.title = title.textContent;
-  items = scan.items;
+  // Every URL ends up in an href of this extension page, so only web URLs are kept
+  // (the worker filters too; this is the last line of defence against javascript:).
+  items = scan.items.filter((item) => /^https?:/i.test(item.url));
+  for (const item of items) noteSize(item);
 
   // The first nine wait for sizes, but not for long. Probes that are still running keep
   // going and improve the order of the nine after that.

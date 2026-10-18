@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "test": "node tests/run-tests.mjs",
-    "typecheck": "tsc --noEmit -p jsconfig.json"
+    "test:attach": "node tests/run-tests.mjs --attach 9222",
+    "test:unit": "node --test tests/unit.test.mjs",
+    "typecheck": "tsc --noEmit -p jsconfig.json",
+    "check": "npm run typecheck && npm run test:unit"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.0",
@@ -18,5 +21,8 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dobrdigital/XXL.pics.FIND.git"
+  },
+  "engines": {
+    "node": ">=22.2"
   }
 }
