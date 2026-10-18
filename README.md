@@ -56,7 +56,25 @@ It is a Manifest V3 extension powered by the site rules of
   shape yt-dlp documents, not against live x.com.*
 - 🔐 **Pictures that need a Referer** open and download through the extension's own viewer.
 
-## 🛠️ Install
+**Why you need it.** Many sites show a small preview and hide the full picture in a link, a `srcset`,
+a lazy-loading attribute or a web component. XXL.pics.FIND finds the largest version, shows its real size
+before you download, and saves it in one click. Handy for designers collecting references, for film posters,
+and for anyone who wants the original file.
+
+## 🌐 Where it works
+
+Checked by hand or with automated tests. Anything else is best effort: the extension runs on every page,
+but how well it works depends on how the site hides its pictures.
+
+| Site | Status | What was checked |
+|---|---|---|
+| Rotten Tomatoes, movie pictures page | ✅ Checked on the live site | The scan found about 130 pictures, largest first; the hover button showed the size of the full file |
+| Test pages: `srcset`, lazy loading, `og:image`, CSS backgrounds, open shadow DOM | ✅ Automated tests | Run in a headless browser |
+| X (x.com, formerly Twitter) | ⚠️ Not checked on the live site | Videos and original photos are read from X's own API responses. The parser is tested only on a sample in X's format, because X's login wall blocks automatic checks |
+| Behance, Dribbble | ❓ Not checked yet | Both use lazy loading and `srcset`, which the extension reads, but nothing has been tested there |
+| Pictures that need a `Referer` | ⚠️ Partly | The scan and the download work; the hover button cannot read the size of such pictures |
+| Closed shadow DOM, pictures drawn on a canvas | ❌ Not reachable | No script can read them |
+
 
 > About a minute. Works in Chrome 120+, Edge, Brave and Vivaldi (Chromium browsers). No account needed.
 
@@ -217,7 +235,25 @@ The context menu itself cannot be clicked from a script; the message it sends is
 - 🔐 **Картинки, которым нужен Referer**, открываются и качаются через собственный просмотрщик
   расширения.
 
-## 🛠️ Установка
+**Зачем это нужно.** Многие сайты показывают маленькое превью, а полную картинку прячут в ссылке,
+в `srcset`, в ленивой загрузке или в веб-компоненте. XXL.pics.FIND находит самую большую версию, показывает
+её реальный размер до скачивания и сохраняет одним кликом. Удобно дизайнерам, которые собирают референсы,
+и всем, кому нужен оригинал, например постеры к фильмам.
+
+## 🌐 Где работает
+
+Проверено вручную или автотестами. Остальное — по возможности: расширение работает на любой странице, но
+насколько хорошо, зависит от того, как сайт прячет картинки.
+
+| Сайт | Статус | Что проверено |
+|---|---|---|
+| Rotten Tomatoes, страница с картинками фильма | ✅ Проверено на живом сайте | Скан нашёл около 130 картинок, самые большие первыми; кнопка при наведении показывала размер полного файла |
+| Тестовые страницы: `srcset`, ленивая загрузка, `og:image`, фоновые CSS-картинки, открытый shadow DOM | ✅ Автотесты | Запускаются в фоновом браузере |
+| X (x.com, бывший Twitter) | ⚠️ Не проверено на живом сайте | Видео и оригиналы фото берутся из ответов API самого X. Парсер проверен только на образце в формате X: стена входа мешает автоматической проверке |
+| Behance, Dribbble | ❓ Пока не проверено | Оба сайта используют ленивую загрузку и `srcset`, которые расширение читает, но на них ничего не проверялось |
+| Картинки, которым нужен `Referer` | ⚠️ Частично | Скан и скачивание работают; кнопка при наведении не может узнать размер таких картинок |
+| Закрытый shadow DOM, картинки, нарисованные на canvas | ❌ Недоступно | Ни один скрипт их не прочитает |
+
 
 > Около минуты. Работает в Chrome 120+, Edge, Brave и Vivaldi (браузеры на Chromium). Регистрация не нужна.
 
